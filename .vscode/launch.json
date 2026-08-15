@@ -1,0 +1,63 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ADS: Diagnose source layout",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/de_generated_scripts/diagnose_pcell_parameters.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--design",
+        "${input:sourceDesign}",
+        "--workspace",
+        "${input:workspacePath}"
+      ]
+    },
+    {
+      "name": "ADS: Refresh RFPro view",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--design",
+        "${input:rfproDesign}",
+        "--workspace",
+        "${input:workspacePath}"
+      ]
+    },
+    {
+      "name": "ADS DE: Attach on port 8765",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 8765
+      },
+      "justMyCode": false
+    }
+  ],
+  "inputs": [
+    {
+      "id": "workspacePath",
+      "type": "promptString",
+      "description": "Absolute path to the ADS workspace",
+      "default": "/path/to/workspace_wrk"
+    },
+    {
+      "id": "sourceDesign",
+      "type": "promptString",
+      "description": "Source layout as library:cell:view",
+      "default": "MY_LIB:MY_CELL:layout"
+    },
+    {
+      "id": "rfproDesign",
+      "type": "promptString",
+      "description": "RFPro cellview as library:cell:view",
+      "default": "MY_LIB:MY_CELL:MY_RFPRO_VIEW"
+    }
+  ]
+}

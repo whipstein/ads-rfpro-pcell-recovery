@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and secrets
+.env
+.env.*
+.venv/
+venv/
+
+# ADS generated workspace state
+.adsPcells/
+.adsPcells.*
+de_exported_python/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/*.local.json
+
+# Build and release output
+build/
+dist/
+*.zip
+*.log

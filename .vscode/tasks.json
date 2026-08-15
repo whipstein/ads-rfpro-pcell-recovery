@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Static check: Python",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "py_compile",
+        "de_generated_scripts/diagnose_pcell_parameters.py",
+        "de_generated_scripts/refresh_rfpro_view.py",
+        "scripts/diagnose_qt.py",
+        "scripts/test_qt_startup.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$python"
+      ]
+    },
+    {
+      "label": "Static check: shell",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-n",
+        "scripts/reset_adspcells_cache.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Repo: static checks",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Static check: Python",
+        "Static check: shell"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

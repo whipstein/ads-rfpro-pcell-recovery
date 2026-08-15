@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "keysight-technologies.ads-python-utils",
+    "ms-python.python",
+    "ms-python.debugpy"
+  ]
+}

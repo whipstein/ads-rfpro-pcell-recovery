@@ -1,0 +1,37 @@
+name: Static checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Compile Python sources
+        run: |
+          python -m py_compile \
+            de_generated_scripts/diagnose_pcell_parameters.py \
+            de_generated_scripts/refresh_rfpro_view.py \
+            scripts/diagnose_qt.py \
+            scripts/test_qt_startup.py
+
+      - name: Check shell syntax
+        run: bash -n scripts/reset_adspcells_cache.sh
+
+      - name: Validate VS Code JSON
+        run: |
+          for file in .vscode/*.json; do
+            python -m json.tool "$file" >/dev/null
+          done
