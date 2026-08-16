@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.11.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.13.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
