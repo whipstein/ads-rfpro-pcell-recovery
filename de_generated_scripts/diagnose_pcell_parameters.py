@@ -373,8 +373,9 @@ def main() -> None:
     if design.is_supermaster and top_level_parameters:
         print("RESULT: The source layout exposes top-level PCell parameters.")
         print(
-            "NEXT: Run refresh_rfpro_view.py with --rebuild-schema so the "
-            "source PCell is re-registered before RFPro cache generation."
+            "NEXT: Run refresh_rfpro_view.py with --rebuild-schema. If ADS "
+            "2026 Update 2.1 still shows an empty RFPro PCell node, rerun the "
+            "schema rebuild with --bypass-pcell-cache."
         )
     elif design.is_supermaster:
         print("RESULT: The PCell exists, but its top-level parameter list is empty.")

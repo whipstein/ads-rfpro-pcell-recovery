@@ -43,6 +43,7 @@ runpy.run_path(
     "--design", "MY_RFPRO_VIEW",
     "--source-design", "layout",
     "--rebuild-schema",
+    # Add "--bypass-pcell-cache" only when the original source LCV remains stale.
 ])
 ```
 
@@ -53,6 +54,9 @@ loading happen on the target machine. Confirm that the rebuild plan lists the
 expected source parameters and generated `itemdef.ael`/`artwork.ael` files.
 Confirm that ADS reports successful targeted AEL recompilation before it
 recreates RFPro, then inspect RFPro's Design Parameters tree.
+When validating `--bypass-pcell-cache`, also confirm that the printed
+`rfpCache_*` source alias exposes the exact original parameter list and that
+the rebuilt RFPro `DesignRef` points to that alias.
 
 ## API changes
 

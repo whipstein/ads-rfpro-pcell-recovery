@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 1.16.0 - 2026-08-16
+
+- Add `--bypass-pcell-cache` for ADS 2026 Update 2.1 cases where a successful
+  rebuild still produces an empty RFPro PCell parameter node.
+- Create a unique source layout-view alias with public `Design.save_design_as()`
+  so RFPro receives a new source LCV/cache identity without clearing the
+  workspace-wide `.adsPcells` cache.
+- Copy and compile the alias view's `artwork.ael`, verify that its PCell schema
+  and generator exactly match the original, and leave the existing RFPro view
+  untouched if alias creation fails.
+- Record the cache-bypass source design in the RFPro backup manifest and retain
+  the alias while RFPro references it.
+
 ## 1.15.0 - 2026-08-16
 
 - Force targeted recompilation of the source cell's generated `itemdef.ael`

@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.15.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.16.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -135,6 +135,7 @@ refresh_rfpro_view.py [--lib LIBRARY] [--cell CELL]
     --design "RFPRO_VIEW|CELL:RFPRO_VIEW|LIBRARY:CELL:RFPRO_VIEW"
     --rebuild-schema
     --source-design "[LIBRARY:[CELL:]]LAYOUT_VIEW"
+    [--bypass-pcell-cache]
     [--em-setup-design "[LIBRARY:[CELL:]]EM_SETUP_VIEW" |
      --substrate "[LIBRARY:]SUBSTRATE_NAME"]
     [--backup-dir /absolute/path/to/backups]
@@ -298,6 +299,27 @@ close that layout. Version 1.12 saved before detecting the mismatch; version
 Version 1.15 adds targeted recompilation and live-library reload of the
 generated AEL component files before RFPro is recreated.
 
+For ADS 2026 Update 2.1, if the normal schema rebuild completes but RFPro still
+shows an empty **PCell** node, rerun with the cache-identity bypass:
+
+```python
+# Add this entry to the main([...]) argument list:
+"--bypass-pcell-cache",
+```
+
+This does not delete or rename `.adsPcells`. It creates a uniquely named layout
+view such as `rfpCache_20260816183000123456` in the original source cell using
+ADS `Design.save_design_as()`, copies and compiles that view's `artwork.ael`,
+and verifies that the new view has the same PCell generator and parameter list.
+The RFPro view is then recreated against the new source LCV, giving ADS a cache
+identity it has not serialized before. The original source layout is unchanged,
+and cache entries used by other RFPro cells are untouched.
+
+Keep the new `rfpCache_*` view while the rebuilt RFPro view references it. Each
+subsequent bypass run creates another unique view. An older alias may be removed
+manually only after no active or backed-up RFPro view references it; the script
+does not guess which aliases are safe to delete.
+
 The script validates that the source layout is a PCell supermaster with
 top-level parameters using read-only access. It does not call
 `PCellInfo.make_pcell()`: that API converts a design into a PCell supermaster
@@ -344,10 +366,12 @@ After confirmation the script:
    live source-library AEL vocabulary. A compile/load failure restores the old
    `.atf` files and leaves RFPro untouched.
 5. Rechecks that the PCell generator and parameter list are unchanged, then
-   deletes the stale RFPro view through `Cell.delete_view()`.
-6. Recreates it through `create_empro_view()` and performs one final
+   when `--bypass-pcell-cache` is selected, creates and verifies a versioned
+   source layout-view alias.
+6. Deletes the stale RFPro view through `Cell.delete_view()`.
+7. Recreates it through `create_empro_view()` and performs one final
    `update_empro_view()` call.
-7. Reopens the generated RFPro setup and verifies that it contains the exact
+8. Reopens the generated RFPro setup and verifies that it contains the exact
    requested source-layout and substrate reference before reporting success.
 
 Use `--backup-dir` to place the backup elsewhere. Use `--yes` only after
@@ -397,6 +421,9 @@ Linux:
 - A schema rebuild replaces only the source cell's generated `itemdef.atf` and
   `artwork.atf`; their prior versions are copied into the RFPro backup first.
   It does not clear the workspace-wide `.adsPcells` directory.
+- `--bypass-pcell-cache` adds one versioned layout view to the source cell and
+  changes only the rebuilt RFPro view's source reference. Do not delete the
+  referenced alias while that RFPro view is in use.
 - A schema rebuild replaces the active RFPro view; analyses, sweeps, and local
   view settings may need recreation. The previous view is copied first.
 - APIs were checked against the portable ADS 2026 Update 2.1 reference. ADS was
