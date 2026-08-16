@@ -9,8 +9,12 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "args": [
+        "--lib",
+        "${input:libraryName}",
+        "--cell",
+        "${input:cellName}",
         "--design",
-        "${input:sourceDesign}",
+        "${input:sourceView}",
         "--workspace",
         "${input:workspacePath}"
       ]
@@ -23,8 +27,12 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "args": [
+        "--lib",
+        "${input:libraryName}",
+        "--cell",
+        "${input:cellName}",
         "--design",
-        "${input:rfproDesign}",
+        "${input:rfproView}",
         "--workspace",
         "${input:workspacePath}"
       ]
@@ -37,10 +45,37 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "args": [
+        "--lib",
+        "${input:libraryName}",
+        "--cell",
+        "${input:cellName}",
         "--design",
-        "${input:rfproDesign}",
+        "${input:rfproView}",
         "--source-design",
-        "${input:sourceDesign}",
+        "${input:sourceView}",
+        "--rebuild-schema",
+        "--workspace",
+        "${input:workspacePath}"
+      ]
+    },
+    {
+      "name": "ADS: Rebuild RFPro schema (explicit substrate)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--lib",
+        "${input:libraryName}",
+        "--cell",
+        "${input:cellName}",
+        "--design",
+        "${input:rfproView}",
+        "--source-design",
+        "${input:sourceView}",
+        "--substrate",
+        "${input:substrateName}",
         "--rebuild-schema",
         "--workspace",
         "${input:workspacePath}"
@@ -65,16 +100,34 @@
       "default": "/path/to/workspace_wrk"
     },
     {
-      "id": "sourceDesign",
+      "id": "libraryName",
       "type": "promptString",
-      "description": "Source layout as library:cell:view",
-      "default": "MY_LIB:MY_CELL:layout"
+      "description": "Default ADS library",
+      "default": "MY_LIB"
     },
     {
-      "id": "rfproDesign",
+      "id": "cellName",
       "type": "promptString",
-      "description": "RFPro cellview as library:cell:view",
-      "default": "MY_LIB:MY_CELL:MY_RFPRO_VIEW"
+      "description": "Default ADS cell",
+      "default": "MY_CELL"
+    },
+    {
+      "id": "sourceView",
+      "type": "promptString",
+      "description": "Source layout view (or a longer identifier to override defaults)",
+      "default": "layout"
+    },
+    {
+      "id": "rfproView",
+      "type": "promptString",
+      "description": "RFPro view (or a longer identifier to override defaults)",
+      "default": "MY_RFPRO_VIEW"
+    },
+    {
+      "id": "substrateName",
+      "type": "promptString",
+      "description": "Substrate name (or library:name to override --lib)",
+      "default": "tech.subst"
     }
   ]
 }

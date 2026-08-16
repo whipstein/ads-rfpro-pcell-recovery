@@ -3,8 +3,8 @@
 This self-contained script prepares the ADS native-library loader before
 importing emtools and applies a scoped Qt platform-plugin redirect only when it
 must create its own QApplication. An application owned by ADS is reused without
-restarting it. The RFPro design is identified as library:cell:view. Close RFPro
-before running the file.
+restarting it. Designs may be fully qualified or may reuse the command-line
+library and cell defaults. Close RFPro before running the file.
 """
 
 from __future__ import annotations
@@ -439,13 +439,74 @@ except ImportError as error:
     raise
 
 
+def _name_argument(value: str) -> str:
+    name = value.strip()
+    if not name or ":" in name:
+        raise argparse.ArgumentTypeError("must be one non-empty name")
+    return name
+
+
 def _design_argument(value: str) -> str:
     parts = [part.strip() for part in value.split(":")]
-    if len(parts) != 3 or any(not part for part in parts):
+    if len(parts) not in (1, 2, 3) or any(not part for part in parts):
         raise argparse.ArgumentTypeError(
-            '--design must be exactly "library:cell:view"'
+            'must be "view", "cell:view", or "library:cell:view"'
         )
     return ":".join(parts)
+
+
+def _substrate_argument(value: str) -> str:
+    parts = [part.strip() for part in value.split(":")]
+    if len(parts) not in (1, 2) or any(not part for part in parts):
+        raise argparse.ArgumentTypeError(
+            'must be "substrate" or "library:substrate"'
+        )
+    return ":".join(parts)
+
+
+def _resolve_design_argument(
+    parser: argparse.ArgumentParser,
+    option: str,
+    value: str,
+    default_library: str | None,
+    default_cell: str | None,
+) -> str:
+    parts = value.split(":")
+    if len(parts) == 3:
+        return value
+    if len(parts) == 2:
+        if default_library is None:
+            parser.error(
+                f'{option} {value!r} omits the library; pass --lib or use '
+                '"LIB:CELL:VIEW"'
+            )
+        return f"{default_library}:{value}"
+    if default_library is None or default_cell is None:
+        missing = []
+        if default_library is None:
+            missing.append("--lib")
+        if default_cell is None:
+            missing.append("--cell")
+        parser.error(
+            f'{option} {value!r} contains only a view; pass '
+            f'{" and ".join(missing)} or use "LIB:CELL:VIEW"'
+        )
+    return f"{default_library}:{default_cell}:{value}"
+
+
+def _resolve_substrate_argument(
+    parser: argparse.ArgumentParser,
+    value: str,
+    default_library: str | None,
+) -> str:
+    if ":" in value:
+        return value
+    if default_library is None:
+        parser.error(
+            f'--substrate {value!r} omits the library; pass --lib or use '
+            '"LIB:SUBSTRATE"'
+        )
+    return f"{default_library}:{value}"
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -457,11 +518,25 @@ def _parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "--lib",
+        "--library",
+        dest="library",
+        type=_name_argument,
+        metavar="LIB",
+        help="default library for abbreviated design and substrate identifiers",
+    )
+    parser.add_argument(
+        "--cell",
+        type=_name_argument,
+        metavar="CELL",
+        help="default cell for design identifiers containing only a view",
+    )
+    parser.add_argument(
         "--design",
         required=True,
         type=_design_argument,
-        metavar="LIB:CELL:VIEW",
-        help="existing ADS RFPro view identifier",
+        metavar="[LIB:[CELL:]]VIEW",
+        help="existing ADS RFPro view identifier; may use --lib and --cell",
     )
     parser.add_argument(
         "--workspace",
@@ -479,8 +554,30 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--source-design",
         type=_design_argument,
-        metavar="LIB:CELL:VIEW",
-        help="parameterized source layout; required with --rebuild-schema",
+        metavar="[LIB:[CELL:]]VIEW",
+        help=(
+            "parameterized source layout; required with --rebuild-schema and "
+            "may use --lib and --cell"
+        ),
+    )
+    substrate_source = parser.add_mutually_exclusive_group()
+    substrate_source.add_argument(
+        "--em-setup-design",
+        type=_design_argument,
+        metavar="[LIB:[CELL:]]VIEW",
+        help=(
+            "exact EM Setup cellview from which to read the substrate; useful "
+            "when it is not active on --source-design"
+        ),
+    )
+    substrate_source.add_argument(
+        "--substrate",
+        type=_substrate_argument,
+        metavar="[LIB:]SUBSTRATE",
+        help=(
+            "substrate library and name to use directly; bypasses EM Setup "
+            "discovery"
+        ),
     )
     parser.add_argument(
         "--backup-dir",
@@ -502,6 +599,40 @@ def _parse_arguments() -> argparse.Namespace:
         parser.error("--backup-dir is only valid with --rebuild-schema")
     if arguments.yes and not arguments.rebuild_schema:
         parser.error("--yes is only valid with --rebuild-schema")
+    if arguments.em_setup_design is not None and not arguments.rebuild_schema:
+        parser.error("--em-setup-design is only valid with --rebuild-schema")
+    if arguments.substrate is not None and not arguments.rebuild_schema:
+        parser.error("--substrate is only valid with --rebuild-schema")
+
+    arguments.design = _resolve_design_argument(
+        parser,
+        "--design",
+        arguments.design,
+        arguments.library,
+        arguments.cell,
+    )
+    if arguments.source_design is not None:
+        arguments.source_design = _resolve_design_argument(
+            parser,
+            "--source-design",
+            arguments.source_design,
+            arguments.library,
+            arguments.cell,
+        )
+    if arguments.em_setup_design is not None:
+        arguments.em_setup_design = _resolve_design_argument(
+            parser,
+            "--em-setup-design",
+            arguments.em_setup_design,
+            arguments.library,
+            arguments.cell,
+        )
+    if arguments.substrate is not None:
+        arguments.substrate = _resolve_substrate_argument(
+            parser,
+            arguments.substrate,
+            arguments.library,
+        )
     return arguments
 
 
@@ -567,7 +698,9 @@ def _read_source_parameter_names(source_design: str) -> list[str]:
 
 def _discover_rebuild_inputs(
     source_design: str,
-) -> tuple[tuple[str, str, str], str, tuple[str, str], list[str]]:
+    emsetup_design: str | None,
+    explicit_substrate: str | None,
+) -> tuple[tuple[str, str, str], str | None, tuple[str, str], list[str]]:
     source_library, source_cell_name, source_view_name = source_design.split(":")
     source_lcv = (source_library, source_cell_name, source_view_name)
     library = _require_open_library(source_library, source_design)
@@ -579,23 +712,57 @@ def _discover_rebuild_inputs(
         raise RuntimeError(f"Source layout does not exist: {source_design!r}.")
 
     parameter_names = _read_source_parameter_names(source_design)
-    emsetup_view_name = emtools.find_emsetup_view_name(source_lcv)
-    if not cell.view_exists(emsetup_view_name):
-        raise RuntimeError(
-            f"The active EM Setup {emsetup_view_name!r} reported for "
-            f"{source_design!r} does not exist."
+
+    if explicit_substrate is not None:
+        substrate_library, substrate_name = explicit_substrate.split(":")
+        _require_open_library(substrate_library, explicit_substrate)
+        substrate_ls = (substrate_library, substrate_name)
+        return source_lcv, None, substrate_ls, parameter_names
+
+    if emsetup_design is None:
+        try:
+            emsetup_view_name = emtools.find_emsetup_view_name(source_lcv)
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"Could not find an active EM Setup for {source_design!r}. "
+                "No RFPro view was changed. Pass --em-setup-design "
+                '"LIB:CELL:EM_SETUP_VIEW" to select one explicitly, or pass '
+                '--substrate "LIB:SUBSTRATE" to reuse the substrate configured '
+                "in the existing RFPro view."
+            ) from error
+        emsetup_lcv = (
+            source_library,
+            source_cell_name,
+            emsetup_view_name,
+        )
+        emsetup_design = ":".join(emsetup_lcv)
+    else:
+        emsetup_library, emsetup_cell_name, emsetup_view_name = (
+            emsetup_design.split(":")
+        )
+        emsetup_lcv = (
+            emsetup_library,
+            emsetup_cell_name,
+            emsetup_view_name,
         )
 
-    substrate = emtools.get_substrate_info(
-        (source_library, source_cell_name, emsetup_view_name)
-    )
+    emsetup_library = _require_open_library(emsetup_lcv[0], emsetup_design)
+    if not emsetup_library.cell_exists(emsetup_lcv[1]):
+        raise RuntimeError(f"EM Setup cell does not exist: {emsetup_design!r}.")
+    emsetup_cell = emsetup_library.cell(emsetup_lcv[1])
+    if not emsetup_cell.view_exists(emsetup_lcv[2]):
+        raise RuntimeError(
+            f"EM Setup view does not exist: {emsetup_design!r}."
+        )
+
+    substrate = emtools.get_substrate_info(emsetup_lcv)
     if len(substrate) != 2 or not all(substrate):
         raise RuntimeError(
-            f"ADS returned invalid substrate information for {source_design!r}: "
+            f"ADS returned invalid substrate information for {emsetup_design!r}: "
             f"{substrate!r}."
         )
     substrate_ls = (str(substrate[0]), str(substrate[1]))
-    return source_lcv, emsetup_view_name, substrate_ls, parameter_names
+    return source_lcv, emsetup_design, substrate_ls, parameter_names
 
 
 def _safe_path_component(value: str) -> str:
@@ -633,6 +800,8 @@ def _confirm_schema_rebuild(
     source_design: str,
     source_view_path: Path,
     backup_path: Path,
+    emsetup_design: str | None,
+    substrate_ls: tuple[str, str],
     parameter_names: list[str],
     assume_yes: bool,
 ) -> None:
@@ -641,6 +810,8 @@ def _confirm_schema_rebuild(
     print(f"  Source layout: {source_design}")
     print(f"  Existing view path: {source_view_path}")
     print(f"  Backup destination: {backup_path}")
+    print(f"  EM Setup: {emsetup_design or 'not used (explicit substrate)'}")
+    print(f"  Substrate: {substrate_ls[0]}:{substrate_ls[1]}")
     print(f"  New source parameters ({len(parameter_names)}):")
     for name in parameter_names:
         print(f"    {name}")
@@ -662,7 +833,7 @@ def _write_backup_manifest(
     backup_path: Path,
     rfpro_design: str,
     source_design: str,
-    emsetup_view_name: str,
+    emsetup_design: str | None,
     substrate_ls: tuple[str, str],
     parameter_names: list[str],
 ) -> None:
@@ -672,7 +843,10 @@ def _write_backup_manifest(
         "emtools": emtools.version(),
         "rfpro_design": rfpro_design,
         "source_design": source_design,
-        "emsetup_view": emsetup_view_name,
+        "emsetup_design": emsetup_design,
+        "emsetup_view": (
+            emsetup_design.split(":")[2] if emsetup_design is not None else None
+        ),
         "substrate": list(substrate_ls),
         "source_parameters": parameter_names,
     }
@@ -687,6 +861,8 @@ def _rebuild_rfpro_schema(
     rfpro_lcv: tuple[str, str, str],
     rfpro_design: str,
     source_design: str,
+    emsetup_design: str | None,
+    explicit_substrate: str | None,
     backup_root: Path | None,
     assume_yes: bool,
 ) -> None:
@@ -710,16 +886,22 @@ def _rebuild_rfpro_schema(
 
     (
         source_lcv,
-        emsetup_view_name,
+        resolved_emsetup_design,
         substrate_ls,
         parameter_names,
-    ) = _discover_rebuild_inputs(source_design)
+    ) = _discover_rebuild_inputs(
+        source_design,
+        emsetup_design,
+        explicit_substrate,
+    )
     backup_path = _planned_backup_path(rfpro_lcv, backup_root)
     _confirm_schema_rebuild(
         rfpro_design,
         source_design,
         old_view_path,
         backup_path,
+        resolved_emsetup_design,
+        substrate_ls,
         parameter_names,
         assume_yes,
     )
@@ -730,7 +912,7 @@ def _rebuild_rfpro_schema(
         backup_path,
         rfpro_design,
         source_design,
-        emsetup_view_name,
+        resolved_emsetup_design,
         substrate_ls,
         parameter_names,
     )
@@ -781,6 +963,8 @@ def main() -> None:
             rfpro_lcv,
             arguments.design,
             arguments.source_design,
+            arguments.em_setup_design,
+            arguments.substrate,
             arguments.backup_dir,
             arguments.yes,
         )

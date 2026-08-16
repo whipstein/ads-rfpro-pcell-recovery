@@ -2,7 +2,8 @@
 
 This self-contained script applies a scoped Qt platform-plugin redirect only
 when it must create its own QApplication. A QApplication owned by ADS is reused
-without changing the environment. The design is identified as library:cell:view.
+without changing the environment. A design may be fully qualified or may reuse
+the command-line library and cell defaults.
 """
 
 from __future__ import annotations
@@ -191,13 +192,49 @@ import keysight.ads.de as de
 from keysight.ads.de import db_uu as db
 
 
+def _name_argument(value: str) -> str:
+    name = value.strip()
+    if not name or ":" in name:
+        raise argparse.ArgumentTypeError("must be one non-empty name")
+    return name
+
+
 def _design_argument(value: str) -> str:
     parts = [part.strip() for part in value.split(":")]
-    if len(parts) != 3 or any(not part for part in parts):
+    if len(parts) not in (1, 2, 3) or any(not part for part in parts):
         raise argparse.ArgumentTypeError(
-            '--design must be exactly "library:cell:view"'
+            'must be "view", "cell:view", or "library:cell:view"'
         )
     return ":".join(parts)
+
+
+def _resolve_design_argument(
+    parser: argparse.ArgumentParser,
+    value: str,
+    default_library: str | None,
+    default_cell: str | None,
+) -> str:
+    parts = value.split(":")
+    if len(parts) == 3:
+        return value
+    if len(parts) == 2:
+        if default_library is None:
+            parser.error(
+                f'--design {value!r} omits the library; pass --lib or use '
+                '"LIB:CELL:VIEW"'
+            )
+        return f"{default_library}:{value}"
+    if default_library is None or default_cell is None:
+        missing = []
+        if default_library is None:
+            missing.append("--lib")
+        if default_cell is None:
+            missing.append("--cell")
+        parser.error(
+            f'--design {value!r} contains only a view; pass '
+            f'{" and ".join(missing)} or use "LIB:CELL:VIEW"'
+        )
+    return f"{default_library}:{default_cell}:{value}"
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -206,18 +243,39 @@ def _parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "--lib",
+        "--library",
+        dest="library",
+        type=_name_argument,
+        metavar="LIB",
+        help="default library for an abbreviated --design",
+    )
+    parser.add_argument(
+        "--cell",
+        type=_name_argument,
+        metavar="CELL",
+        help="default cell when --design contains only a view",
+    )
+    parser.add_argument(
         "--design",
         required=True,
         type=_design_argument,
-        metavar="LIB:CELL:VIEW",
-        help="ADS source layout identifier",
+        metavar="[LIB:[CELL:]]VIEW",
+        help="ADS source layout identifier; may use --lib and --cell",
     )
     parser.add_argument(
         "--workspace",
         type=Path,
         help="ADS workspace path; required for standalone execution",
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    arguments.design = _resolve_design_argument(
+        parser,
+        arguments.design,
+        arguments.library,
+        arguments.cell,
+    )
+    return arguments
 
 
 def _open_workspace_if_requested(workspace_path: Path | None) -> object | None:

@@ -29,6 +29,7 @@ if [ ! -d "$cache_path" ]; then
 fi
 
 printf 'ADS must be completely closed for workspace:\n  %s\n' "$workspace_path"
+printf 'WARNING: this resets the workspace-wide cache and can make unrelated RFPro analyses appear stale.\n'
 printf 'Type CLOSED to confirm that ADS is not running: '
 IFS= read -r confirmation
 

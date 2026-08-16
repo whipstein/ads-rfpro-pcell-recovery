@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## 1.10.0 - 2026-08-16
+
+- Add `--lib` (`--library`) and `--cell` defaults to both production scripts.
+- Allow design inputs as `VIEW`, `CELL:VIEW`, or `LIB:CELL:VIEW`, filling only
+  omitted fields from the defaults.
+- Allow `--substrate NAME` to reuse `--lib`, while retaining
+  `--substrate LIB:NAME`.
+- Update VS Code launch configurations to prompt once for library and cell.
+
+## 1.9.0 - 2026-08-16
+
+- Add `--em-setup-design "LIB:CELL:VIEW"` so a rebuild can use an EM Setup
+  that is not active on the parameterized source layout.
+- Add `--substrate "LIB:SUBSTRATE"` to bypass EM Setup discovery when the
+  existing RFPro substrate is already known.
+- Fail before backing up or replacing the RFPro view when automatic EM Setup
+  discovery fails, with commands for both supported fallbacks.
+- Make targeted refresh/rebuild the default documented workflow and identify
+  `.adsPcells` reset as a workspace-wide last resort.
+
 ## 1.8.0 - 2026-08-16
 
 - Separate value-only refreshes from destructive PCell parameter-schema

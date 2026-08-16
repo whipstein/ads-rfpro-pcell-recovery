@@ -34,6 +34,7 @@ if (-not (Test-Path -LiteralPath $cachePath -PathType Container)) {
 
 Write-Host "ADS must be completely closed for workspace:"
 Write-Host "  $resolvedWorkspace"
+Write-Warning "This resets the workspace-wide cache and can make unrelated RFPro analyses appear stale."
 $confirmation = Read-Host "Type CLOSED to confirm that ADS is not running"
 if ($confirmation -cne "CLOSED") {
     Write-Host "Cancelled. Nothing changed."
