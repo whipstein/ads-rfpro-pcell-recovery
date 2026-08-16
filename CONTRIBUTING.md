@@ -30,22 +30,28 @@ python de_generated_scripts/refresh_rfpro_view.py \
   --workspace "/path/to/workspace_wrk"
 ```
 
-When the parameter schema changes, also validate the backed-up rebuild path:
+When the parameter schema changes, validate the backed-up rebuild path from the
+live ADS Python Console with the owning workspace open:
 
-```bash
-python de_generated_scripts/refresh_rfpro_view.py \
-  --lib "MY_LIB" --cell "MY_CELL" \
-  --design "MY_RFPRO_VIEW" \
-  --source-design "layout" \
-  --rebuild-schema \
-  --workspace "/path/to/workspace_wrk"
+```python
+import runpy
+
+runpy.run_path(
+    r"/path/to/de_generated_scripts/refresh_rfpro_view.py"
+)["main"]([
+    "--lib", "MY_LIB", "--cell", "MY_CELL",
+    "--design", "MY_RFPRO_VIEW",
+    "--source-design", "layout",
+    "--rebuild-schema",
+])
 ```
 
-Close RFPro before running the refresh. Runtime success cannot be established
-by syntax compilation alone because Qt and ADS native-library loading happen on
-the target machine. Confirm that the rebuild output shows identical expected
-parameter names under `Stored PCell parameters after`, then inspect RFPro's
-Design Parameters tree.
+Save and close the source layout and target RFPro view before running a schema
+rebuild. Other RFPro simulations may remain open. Runtime success cannot be
+established by syntax compilation alone because Qt and ADS native-library
+loading happen on the target machine. Confirm that the rebuild output shows
+identical expected entries under `Stored PCell schema before` and `Stored PCell
+schema after`, then inspect RFPro's Design Parameters tree.
 
 ## API changes
 

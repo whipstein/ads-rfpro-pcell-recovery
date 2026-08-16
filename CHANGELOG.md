@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## 1.13.0 - 2026-08-16
+
+- Require `--rebuild-schema` to execute inside the live ADS application and
+  reject standalone rebuilds before opening a workspace or design.
+- Explain that palette and design-window callback warnings identify
+  application-only AEL APIs rather than `.atf` files that need manual loading.
+- Accept an explicit argument list in `main()` for invocation through
+  `runpy.run_path()` from the ADS Python Console.
+- Require the source layout window to be saved and closed while allowing
+  unrelated RFPro simulations to remain open.
+- Compare source PCell parameter names and types before saving; revert the
+  source and preserve RFPro when targeted re-registration changes the schema.
+- Remove VS Code launch configurations that incorrectly ran schema rebuilds in
+  standalone automation mode.
+
 ## 1.12.0 - 2026-08-16
 
 - Re-register only the specified source PCell supermaster, using its existing

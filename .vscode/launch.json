@@ -38,50 +38,6 @@
       ]
     },
     {
-      "name": "ADS: Rebuild RFPro parameter schema",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "args": [
-        "--lib",
-        "${input:libraryName}",
-        "--cell",
-        "${input:cellName}",
-        "--design",
-        "${input:rfproView}",
-        "--source-design",
-        "${input:sourceView}",
-        "--rebuild-schema",
-        "--workspace",
-        "${input:workspacePath}"
-      ]
-    },
-    {
-      "name": "ADS: Rebuild RFPro schema (substrate override)",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "args": [
-        "--lib",
-        "${input:libraryName}",
-        "--cell",
-        "${input:cellName}",
-        "--design",
-        "${input:rfproView}",
-        "--source-design",
-        "${input:sourceView}",
-        "--substrate",
-        "${input:substrateName}",
-        "--rebuild-schema",
-        "--workspace",
-        "${input:workspacePath}"
-      ]
-    },
-    {
       "name": "ADS DE: Attach on port 8765",
       "type": "debugpy",
       "request": "attach",
@@ -122,12 +78,6 @@
       "type": "promptString",
       "description": "RFPro view (or a longer identifier to override defaults)",
       "default": "MY_RFPRO_VIEW"
-    },
-    {
-      "id": "substrateName",
-      "type": "promptString",
-      "description": "Substrate name (or library:name to override --lib)",
-      "default": "tech.subst"
     }
   ]
 }

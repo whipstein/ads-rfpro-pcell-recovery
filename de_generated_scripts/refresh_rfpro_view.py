@@ -4,7 +4,8 @@ This self-contained script prepares the ADS native-library loader before
 importing emtools and applies a scoped Qt platform-plugin redirect only when it
 must create its own QApplication. An application owned by ADS is reused without
 restarting it. Designs may be fully qualified or may reuse the command-line
-library and cell defaults. Close RFPro before running the file.
+library and cell defaults. Schema rebuilds must execute in the live ADS
+application. Save and close the source layout and target RFPro view first.
 """
 
 from __future__ import annotations
@@ -509,7 +510,7 @@ def _resolve_substrate_argument(
     return f"{default_library}:{value}"
 
 
-def _parse_arguments() -> argparse.Namespace:
+def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Refresh an existing ADS RFPro view, or rebuild it after a PCell "
@@ -592,7 +593,7 @@ def _parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="skip the interactive REBUILD confirmation",
     )
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
     if arguments.rebuild_schema and arguments.source_design is None:
         parser.error("--source-design is required with --rebuild-schema")
     if arguments.backup_dir is not None and not arguments.rebuild_schema:
@@ -683,6 +684,55 @@ def _pcell_parameter_names(design: db.Design) -> list[str]:
     return [parameter.name for parameter in design.pcell_parameters]
 
 
+def _pcell_parameter_schema(design: db.Design) -> list[tuple[str, str]]:
+    return [
+        (parameter.name, str(parameter.type))
+        for parameter in design.pcell_parameters
+    ]
+
+
+def _format_pcell_schema(schema: list[tuple[str, str]]) -> str:
+    if not schema:
+        return "(none)"
+    return ", ".join(
+        f"{name} [{parameter_type}]" for name, parameter_type in schema
+    )
+
+
+def _require_design_closed_in_window(design_name: str) -> None:
+    """Protect live, possibly unsaved source-layout edits from rollback."""
+
+    from keysight.ads.de import app
+
+    expected = tuple(design_name.split(":"))
+    open_windows: list[str] = []
+    for window_type in (
+        app.WindowType.SCHEMATIC_WINDOW,
+        app.WindowType.LAYOUT_WINDOW,
+        app.WindowType.SYMBOL_WINDOW,
+    ):
+        for window in app.find_windows_by_type(window_type):
+            try:
+                window_design = app.get_design_in_uu_from_window(window)
+            except Exception:
+                continue
+            actual = (
+                window_design.lib_name,
+                window_design.cell_name,
+                window_design.view_name,
+            )
+            if actual == expected:
+                open_windows.append(window.title)
+
+    if open_windows:
+        titles = ", ".join(repr(title) for title in open_windows)
+        raise RuntimeError(
+            f"Source layout {design_name!r} is open in ADS ({titles}). Save "
+            "and close only that source layout, then rerun the command. Other "
+            "RFPro views and simulations may remain open."
+        )
+
+
 def _read_source_parameter_names(source_design: str) -> list[str]:
     design = db.open_design(source_design, de.db.DesignMode.READ_ONLY)
     if not design.is_supermaster:
@@ -708,8 +758,11 @@ def _reregister_source_pcell(source_design: str) -> list[str]:
     process still supplies stale registration data to ``update_empro_view``.
     Reapplying a copy of the layout's own PCellInfo is the public-API
     equivalent of accepting Customize PCell and saving the layout. It changes
-    neither the evaluator nor its selected artwork arguments.
+    neither the evaluator nor its selected artwork arguments. The result is
+    saved only if parameter names and types remain identical.
     """
+
+    _require_design_closed_in_window(source_design)
 
     try:
         design = db.open_design(source_design, de.db.DesignMode.APPEND)
@@ -735,8 +788,8 @@ def _reregister_source_pcell(source_design: str) -> list[str]:
     item_definition_names = [
         parameter.name for parameter in model_definition.parameters
     ]
-    before_names = _pcell_parameter_names(design)
-    if not before_names:
+    before_schema = _pcell_parameter_schema(design)
+    if not before_schema:
         raise RuntimeError(
             f"Source layout {source_design!r} has no stored PCell parameters."
         )
@@ -748,19 +801,21 @@ def _reregister_source_pcell(source_design: str) -> list[str]:
 
     try:
         pcell_info.make_pcell(design)
-        design.save_design()
     except Exception as error:
+        try:
+            design.revert_design()
+        except Exception as revert_error:
+            raise RuntimeError(
+                f"ADS could not re-register source PCell {source_design!r}, "
+                "and rollback also failed. The RFPro view was not replaced. "
+                "Close the source without saving and reopen it."
+            ) from revert_error
         raise RuntimeError(
-            f"ADS could not re-register and save the source PCell "
-            f"{source_design!r}. The RFPro view has not been replaced."
+            f"ADS could not re-register source PCell {source_design!r}. The "
+            "source was reverted and the RFPro view was not replaced."
         ) from error
 
-    after_names = _pcell_parameter_names(design)
-    if not after_names:
-        raise RuntimeError(
-            f"Source PCell {source_design!r} became empty after "
-            "re-registration. The RFPro view has not been replaced."
-        )
+    after_schema = _pcell_parameter_schema(design)
 
     print("Targeted source PCell registration refreshed:")
     print(f"  Source: {source_design}")
@@ -775,9 +830,44 @@ def _reregister_source_pcell(source_design: str) -> list[str]:
         "  Item-definition parameters: "
         + (", ".join(item_definition_names) if item_definition_names else "(none)")
     )
-    print(f"  Stored PCell parameters before: {', '.join(before_names)}")
-    print(f"  Stored PCell parameters after: {', '.join(after_names)}")
-    return after_names
+    print(f"  Stored PCell schema before: {_format_pcell_schema(before_schema)}")
+    print(f"  Stored PCell schema after: {_format_pcell_schema(after_schema)}")
+
+    if after_schema != before_schema:
+        try:
+            design.revert_design()
+        except Exception as revert_error:
+            raise RuntimeError(
+                "Targeted PCell re-registration changed the source parameter "
+                "schema, and ADS could not roll the source layout back. The "
+                "RFPro view was not replaced. Close the source without saving "
+                "and reopen it before continuing."
+            ) from revert_error
+        raise RuntimeError(
+            "Targeted PCell re-registration changed the source parameter "
+            "schema. The source layout was reverted without saving and the "
+            "RFPro view was not replaced. Do not repeat this command until "
+            "the source parameters are correct in EM > Component > "
+            "Parameters... and File > Customize PCell."
+        )
+
+    try:
+        design.save_design()
+    except Exception as error:
+        try:
+            design.revert_design()
+        except Exception as revert_error:
+            raise RuntimeError(
+                f"ADS could not save or roll back source PCell "
+                f"{source_design!r}. The RFPro view was not replaced. Close "
+                "the source without saving and reopen it."
+            ) from revert_error
+        raise RuntimeError(
+            f"ADS could not save source PCell {source_design!r}. The source "
+            "was reverted and the RFPro view was not replaced."
+        ) from error
+
+    return [name for name, _parameter_type in after_schema]
 
 
 def _design_ref_tuple(
@@ -1054,7 +1144,7 @@ def _confirm_schema_rebuild(
         print(f"    {name}")
     print(
         "  Source action: re-register this PCell from its existing saved "
-        "PCellInfo and save it"
+        "PCellInfo; save only if its schema remains unchanged"
     )
     print("  RFPro analyses, sweeps, and local view settings may need recreation.")
 
@@ -1158,9 +1248,10 @@ def _rebuild_rfpro_schema(
     refreshed_parameter_names = _reregister_source_pcell(source_design)
     if refreshed_parameter_names != parameter_names:
         raise RuntimeError(
-            "Targeted PCell re-registration changed the source parameter "
-            "schema. The RFPro view was not replaced. Review the printed "
-            "before/after lists and rerun the same rebuild command."
+            "The source parameter list changed between rebuild discovery and "
+            "targeted PCell registration. The RFPro view was not replaced. "
+            "Reopen the source layout and verify its saved parameter list "
+            "before continuing."
         )
 
     backup_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1213,11 +1304,29 @@ def _rebuild_rfpro_schema(
     print("Open RFPro and verify Design Parameters before recreating any sweeps.")
 
 
-def main() -> None:
-    arguments = _parse_arguments()
+def main(argv: list[str] | None = None) -> None:
+    arguments = _parse_arguments(argv)
     library, cell, view = arguments.design.split(":")
     rfpro_lcv = (library, cell, view)
     _print_qt_runtime()
+
+    if arguments.rebuild_schema and not de.is_pde_app():
+        raise RuntimeError(
+            "--rebuild-schema must run inside the live ADS application. This "
+            "workspace loads application-only AEL functions such as "
+            "api_create_palette_item and "
+            "db_add_design_opened_in_window_callback; they are intentionally "
+            "unavailable in standalone automation. No workspace or design "
+            "was opened. Run main([...]) from the ADS Python Console and omit "
+            "--workspace."
+        )
+    if arguments.rebuild_schema and arguments.workspace is not None:
+        raise RuntimeError(
+            "Do not pass --workspace with --rebuild-schema inside ADS. Open "
+            "the owning workspace in ADS first, then run main([...]) against "
+            "that live session."
+        )
+
     workspace = _open_workspace_if_requested(arguments.workspace)
     _require_open_library(library, arguments.design)
 

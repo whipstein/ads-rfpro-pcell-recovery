@@ -137,7 +137,6 @@ refresh_rfpro_view.py [--lib LIBRARY] [--cell CELL]
     --source-design "[LIBRARY:[CELL:]]LAYOUT_VIEW"
     [--em-setup-design "[LIBRARY:[CELL:]]EM_SETUP_VIEW" |
      --substrate "[LIBRARY:]SUBSTRATE_NAME"]
-    [--workspace /absolute/path/to/workspace_wrk]
     [--backup-dir /absolute/path/to/backups]
     [--yes]
 ```
@@ -153,9 +152,10 @@ The identifier resolution rules are:
 
 Full identifiers remain supported and override the defaults for that option.
 `--library` is an alias for `--lib`. Use `--workspace` when launching a fresh
-ADS-bundled Python process. An identifier does not open its library by itself;
-the library must belong to the active workspace. Omit `--workspace` only when
-the script already executes in a process with the correct workspace open.
+ADS-bundled Python process for diagnosis or a value-only refresh. A schema
+rebuild must run inside the live ADS application with the owning workspace
+already open, and therefore rejects `--workspace`. An identifier does not open
+its library by itself; the library must belong to the active workspace.
 
 Use the normal refresh only when parameter names, types, order, and count are
 unchanged. Use `--rebuild-schema` after adding, removing, renaming, reordering,
@@ -252,63 +252,74 @@ the schema rebuild below.
 
 Use this when parameters were added, removed, renamed, reordered, or changed in
 type. Run this targeted rebuild before considering the global `.adsPcells`
-reset in step 2. For the most deterministic result, leave ADS closed and launch
-the script from VS Code with the ADS-bundled interpreter. `--workspace` lets the
-script open the workspace itself:
+reset in step 2. A schema rebuild must execute inside the live ADS application.
+Standalone automation does not provide application AEL functions such as
+`api_create_palette_item` or
+`db_add_design_opened_in_window_callback`. Messages that those functions or
+their `.atf` files are unavailable do not mean those files should be manually
+loaded; they mean the workspace was opened in the wrong execution context.
 
-```bash
-python de_generated_scripts/refresh_rfpro_view.py \
-  --lib "MY_LIB" \
-  --cell "MY_CELL" \
-  --design "MY_RFPRO_VIEW" \
-  --source-design "layout" \
-  --rebuild-schema \
-  --workspace "/absolute/path/to/workspace_wrk"
+Open the owning workspace in ADS. Save and close the parameterized source
+layout and the target RFPro view. Other RFPro views and simulations may remain
+open. Then run this from the **ADS Python Console**, changing the repository
+path and argument values:
+
+```python
+import runpy
+
+runpy.run_path(
+    r"/absolute/path/to/ads-rfpro-pcell-recovery/de_generated_scripts/refresh_rfpro_view.py"
+)["main"]([
+    "--lib", "MY_LIB",
+    "--cell", "MY_CELL",
+    "--design", "MY_RFPRO_VIEW",
+    "--source-design", "layout",
+    "--rebuild-schema",
+])
 ```
 
-Open ADS only after this command completes. This prevents a newly launched ADS
-session from writing workspace RFPro/PCell state while the schema rebuild is in
-progress. The included VS Code configuration **ADS: Rebuild RFPro parameter
-schema** follows this standalone path.
+This is the same command-line interface expressed as an argument list; library,
+cell, and view names are not variables inside the script. Do not include
+`--workspace`, because the workspace is already open in the live ADS process.
+The standalone VS Code rebuild configurations were removed to prevent launching
+the recovery in the wrong context. The included **ADS DE: Attach on port 8765**
+configuration remains available when the ADS debugger is enabled.
 
-Running inside a live ADS process is also supported: restart ADS, keep RFPro
-closed, execute the script through the supported in-application path, and omit
-`--workspace` because the correct workspace is already active.
+The ADS Python Console may not provide an interactive terminal. Run once
+without `--yes` to print and review the rebuild plan; if it reports that
+interactive confirmation is unavailable, append `"--yes"` to the argument
+list and run it again.
+
+If an older package run already reported that re-registration changed the
+schema, open the source layout first, reapply the intended definitions through
+**EM > Component > Parameters...**, verify **File > Customize PCell**, save, and
+close that layout. Version 1.12 saved before detecting the mismatch; version
+1.13 performs the comparison before saving and reverts any mismatch.
 
 The script validates that the source layout is a PCell supermaster with
 top-level parameters. Before touching the RFPro view, it re-registers only the
 specified source PCell from its saved `PCellInfo` and saves that supermaster.
 This refreshes the in-process PCell registry used by RFPro while preserving the
-AEL evaluator and its selected artwork arguments. The confirmation prompt
-lists this source action as well as the RFPro replacement. It also reads the
-layout and substrate references from the existing RFPro view and prints the
-resolved substrate and its source in the rebuild plan.
+AEL evaluator and its selected artwork arguments. It compares parameter names
+and types before saving; a mismatch reverts the source and leaves RFPro
+untouched. The confirmation prompt lists this source action as well as the
+RFPro replacement. It also reads the layout and substrate references from the
+existing RFPro view and prints the resolved substrate and its source in the
+rebuild plan.
 
 If the existing RFPro setup cannot be read, the script tries the active EM
 Setup automatically. To override both, select an EM Setup explicitly:
 
-```bash
-python de_generated_scripts/refresh_rfpro_view.py \
-  --lib "MY_LIB" \
-  --cell "MY_CELL" \
-  --design "MY_RFPRO_VIEW" \
-  --source-design "layout" \
-  --em-setup-design "emSetup" \
-  --rebuild-schema \
-  --workspace "/absolute/path/to/workspace_wrk"
+```python
+# Add these entries to the main([...]) argument list:
+"--em-setup-design", "emSetup",
 ```
 
 Or supply the substrate directly as a final override:
 
-```bash
-python de_generated_scripts/refresh_rfpro_view.py \
-  --lib "MY_LIB" \
-  --cell "MY_CELL" \
-  --design "MY_RFPRO_VIEW" \
-  --source-design "layout" \
-  --substrate "tech.subst" \
-  --rebuild-schema \
-  --workspace "/absolute/path/to/workspace_wrk"
+```python
+# Add these entries to the main([...]) argument list:
+"--substrate", "tech.subst",
 ```
 
 These options are mutually exclusive. The explicit EM Setup may be on a
@@ -373,7 +384,8 @@ Linux:
 - Close ADS before renaming `.adsPcells`.
 - Treat `.adsPcells` reset as workspace-wide; do not use it while unrelated
   RFPro simulations or result reviews are active.
-- Close RFPro before running `refresh_rfpro_view.py`.
+- For a schema rebuild, save and close the source layout and target RFPro view;
+  unrelated RFPro simulations may remain open.
 - A schema rebuild replaces the active RFPro view; analyses, sweeps, and local
   view settings may need recreation. The previous view is copied first.
 - APIs were checked against the portable ADS 2026 Update 2.1 reference. ADS was
