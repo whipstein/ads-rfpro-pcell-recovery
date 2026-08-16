@@ -16,6 +16,7 @@ venv/
 .adsPcells/
 .adsPcells.*
 de_exported_python/
+.rfpro-pcell-recovery/
 
 # Editors and operating systems
 .DS_Store

@@ -51,4 +51,7 @@ while (Test-Path -LiteralPath $backupPath) {
 Move-Item -LiteralPath $cachePath -Destination $backupPath
 Write-Host "Cache preserved as:"
 Write-Host "  $backupPath"
-Write-Host "Restart ADS, keep RFPro closed, and run refresh_rfpro_view.py."
+Write-Host "For a standalone VS Code run, leave ADS closed and pass --workspace."
+Write-Host "For value-only changes, run de_generated_scripts/refresh_rfpro_view.py normally."
+Write-Host "For renamed/added/removed/type-changed parameters, use --rebuild-schema."
+Write-Host "Open ADS only after the standalone refresh or rebuild completes."

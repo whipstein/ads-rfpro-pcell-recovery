@@ -30,6 +30,23 @@
       ]
     },
     {
+      "name": "ADS: Rebuild RFPro parameter schema",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--design",
+        "${input:rfproDesign}",
+        "--source-design",
+        "${input:sourceDesign}",
+        "--rebuild-schema",
+        "--workspace",
+        "${input:workspacePath}"
+      ]
+    },
+    {
       "name": "ADS DE: Attach on port 8765",
       "type": "debugpy",
       "request": "attach",

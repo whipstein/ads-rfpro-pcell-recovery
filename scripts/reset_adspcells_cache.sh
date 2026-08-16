@@ -47,4 +47,7 @@ done
 
 mv "$cache_path" "$backup_path"
 printf 'Cache preserved as:\n  %s\n' "$backup_path"
-printf 'Restart ADS, keep RFPro closed, and run refresh_rfpro_view.py.\n'
+printf 'For a standalone VS Code run, leave ADS closed and pass --workspace.\n'
+printf 'For value-only changes, run de_generated_scripts/refresh_rfpro_view.py normally.\n'
+printf 'For renamed/added/removed/type-changed parameters, use --rebuild-schema.\n'
+printf 'Open ADS only after the standalone refresh or rebuild completes.\n'

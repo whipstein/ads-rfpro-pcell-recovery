@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.7.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.8.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -128,6 +128,13 @@ diagnose_pcell_parameters.py --design "LIBRARY:CELL:LAYOUT_VIEW"
 
 refresh_rfpro_view.py --design "LIBRARY:CELL:RFPRO_VIEW"
     [--workspace /absolute/path/to/workspace_wrk]
+
+refresh_rfpro_view.py --design "LIBRARY:CELL:RFPRO_VIEW"
+    --rebuild-schema
+    --source-design "LIBRARY:CELL:LAYOUT_VIEW"
+    [--workspace /absolute/path/to/workspace_wrk]
+    [--backup-dir /absolute/path/to/backups]
+    [--yes]
 ```
 
 `--design` must have exactly three non-empty colon-separated fields. Use
@@ -135,6 +142,11 @@ refresh_rfpro_view.py --design "LIBRARY:CELL:RFPRO_VIEW"
 string identifies a cellview but does not open its library by itself; the
 library must belong to the active workspace. Omit `--workspace` only when the
 script already executes in a process with the correct ADS workspace open.
+
+Use the normal refresh only when parameter names, types, order, and count are
+unchanged. Use `--rebuild-schema` after adding, removing, renaming, reordering,
+or changing the type of a parameter. Schema rebuild is intentionally explicit
+because it replaces the RFPro view and may invalidate analyses or sweeps.
 
 In the examples below, `python` means the Python executable bundled with the
 same ADS installation that owns the workspace—not a system Python installation.
@@ -146,13 +158,15 @@ same ADS installation that owns the workspace—not a system Python installation
 Run the diagnostic with the source layout cellview:
 
 ```bash
-python diagnose_pcell_parameters.py --design "MY_LIB:MY_CELL:layout"
+python de_generated_scripts/diagnose_pcell_parameters.py \
+  --design "MY_LIB:MY_CELL:layout"
 ```
 
 For standalone ADS Python, provide the workspace:
 
 ```bash
-python diagnose_pcell_parameters.py --design "MY_LIB:MY_CELL:layout" \
+python de_generated_scripts/diagnose_pcell_parameters.py \
+  --design "MY_LIB:MY_CELL:layout" \
   --workspace "/absolute/path/to/workspace_wrk"
 ```
 
@@ -180,18 +194,20 @@ chmod +x scripts/reset_adspcells_cache.sh
 ./scripts/reset_adspcells_cache.sh "/path/to/workspace_wrk"
 ```
 
-### 3. Refresh RFPro
+### 3A. Refresh value-only changes
 
 Restart ADS but keep RFPro closed. Pass the existing RFPro cellview:
 
 ```bash
-python refresh_rfpro_view.py --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW"
+python de_generated_scripts/refresh_rfpro_view.py \
+  --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW"
 ```
 
 For standalone ADS Python:
 
 ```bash
-python refresh_rfpro_view.py --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW" \
+python de_generated_scripts/refresh_rfpro_view.py \
+  --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW" \
   --workspace "/absolute/path/to/workspace_wrk"
 ```
 
@@ -199,8 +215,53 @@ python refresh_rfpro_view.py --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW" \
 auxiliary data, including `.adsPcells`, `adsMultiTechData.json`, and `proj.ltd`.
 Then open RFPro and inspect **Design Parameters**.
 
-Deleting and recreating only the RFPro cellview is insufficient because
-`.adsPcells` resides at the workspace root.
+Do not repeat the normal refresh when the parameter schema changed; proceed to
+the schema rebuild below.
+
+### 3B. Rebuild after a parameter-schema change
+
+Use this when parameters were added, removed, renamed, reordered, or changed in
+type. First complete the `.adsPcells` reset in step 2. For the most deterministic
+result, leave ADS closed and launch the script from VS Code with the ADS-bundled
+interpreter. `--workspace` lets the script open the workspace itself:
+
+```bash
+python de_generated_scripts/refresh_rfpro_view.py \
+  --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW" \
+  --source-design "MY_LIB:MY_CELL:layout" \
+  --rebuild-schema \
+  --workspace "/absolute/path/to/workspace_wrk"
+```
+
+Open ADS only after this command completes. This prevents a newly launched ADS
+session from repopulating workspace RFPro/PCell state between the cache reset
+and schema rebuild. The included VS Code configuration **ADS: Rebuild RFPro
+parameter schema** follows this standalone path.
+
+Running inside a live ADS process is also supported: restart ADS, keep RFPro
+closed, execute the script through the supported in-application path, and omit
+`--workspace` because the correct workspace is already active.
+
+The script validates that the source layout is a PCell supermaster with
+top-level parameters. It then uses the active EM Setup to discover the
+substrate, prints the rebuild plan, and requires typing `REBUILD`. After
+confirmation it:
+
+1. Copies the complete existing RFPro view to
+   `WORKSPACE/.rfpro-pcell-recovery/view-backups/...`.
+2. Adds `rfpro-recovery-manifest.json` to the backup with the source parameter
+   names, ADS version, EM Setup, and substrate.
+3. Deletes the stale RFPro view through `Cell.delete_view()`.
+4. Recreates it through `create_empro_view()` and performs one final
+   `update_empro_view()` call.
+
+Use `--backup-dir` to place the backup elsewhere. Use `--yes` only after
+reviewing the command; it skips the interactive confirmation. This operation
+can discard RFPro analyses, sweeps, and view-local settings from the active
+view. They remain in the preserved backup but may need manual recreation.
+
+Deleting and recreating only the RFPro cellview without step 2 is insufficient
+because `.adsPcells` resides at the workspace root.
 
 ## Qt validation
 
@@ -234,12 +295,15 @@ Linux:
 
 - Close ADS before renaming `.adsPcells`.
 - Close RFPro before running `refresh_rfpro_view.py`.
-- Existing sweeps may need recreation when parameter names change.
+- A schema rebuild replaces the active RFPro view; analyses, sweeps, and local
+  view settings may need recreation. The previous view is copied first.
 - APIs were checked against the portable ADS 2026 Update 2.1 reference. ADS was
   unavailable on the packaging machine, so final Qt startup must be tested on
   the target ADS installation.
 - ADS 2024 Update 2 documented the `.adsPcells` workaround. ADS 2025 Update 1
-  added broader support for top-level and hierarchical PCell changes.
+  states that all top-level and hierarchical PCell parameter changes are
+  supported. The explicit rebuild mode remains a recovery path when an existing
+  RFPro view retains stale schema metadata.
 
 ## Keysight references
 

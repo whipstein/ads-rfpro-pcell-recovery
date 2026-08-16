@@ -28,6 +28,16 @@ python de_generated_scripts/refresh_rfpro_view.py \
   --workspace "/path/to/workspace_wrk"
 ```
 
+When the parameter schema changes, also validate the backed-up rebuild path:
+
+```bash
+python de_generated_scripts/refresh_rfpro_view.py \
+  --design "MY_LIB:MY_CELL:MY_RFPRO_VIEW" \
+  --source-design "MY_LIB:MY_CELL:layout" \
+  --rebuild-schema \
+  --workspace "/path/to/workspace_wrk"
+```
+
 Close RFPro before running the refresh. Runtime success cannot be established
 by syntax compilation alone because Qt and ADS native-library loading happen on
 the target machine.

@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import os
+import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -406,6 +409,7 @@ def _create_or_reuse_qapplication() -> tuple[Path, Path | None, object, bool, bo
 ) = _create_or_reuse_qapplication()
 
 import keysight.ads.de as de
+from keysight.ads.de import db_uu as db
 
 ADS_EMVIEWS_LIBRARY_HANDLE = None
 if ADS_NATIVE_PRELOAD_REQUIRED:
@@ -446,7 +450,10 @@ def _design_argument(value: str) -> str:
 
 def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Refresh an existing ADS RFPro view.",
+        description=(
+            "Refresh an existing ADS RFPro view, or rebuild it after a PCell "
+            "parameter-schema change."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -461,7 +468,41 @@ def _parse_arguments() -> argparse.Namespace:
         type=Path,
         help="ADS workspace path; required for standalone execution",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--rebuild-schema",
+        action="store_true",
+        help=(
+            "back up, delete, and recreate the RFPro view after parameters "
+            "were added, removed, renamed, reordered, or changed in type"
+        ),
+    )
+    parser.add_argument(
+        "--source-design",
+        type=_design_argument,
+        metavar="LIB:CELL:VIEW",
+        help="parameterized source layout; required with --rebuild-schema",
+    )
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        help=(
+            "schema-rebuild backup root; defaults to "
+            "WORKSPACE/.rfpro-pcell-recovery/view-backups"
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the interactive REBUILD confirmation",
+    )
+    arguments = parser.parse_args()
+    if arguments.rebuild_schema and arguments.source_design is None:
+        parser.error("--source-design is required with --rebuild-schema")
+    if arguments.backup_dir is not None and not arguments.rebuild_schema:
+        parser.error("--backup-dir is only valid with --rebuild-schema")
+    if arguments.yes and not arguments.rebuild_schema:
+        parser.error("--yes is only valid with --rebuild-schema")
+    return arguments
 
 
 def _open_workspace_if_requested(workspace_path: Path | None) -> object | None:
@@ -493,6 +534,237 @@ def _print_qt_runtime() -> None:
     if ADS_EMVIEWS_LIBRARY_FILE is not None:
         print(f"ADS EM Views library: {ADS_EMVIEWS_LIBRARY_FILE}")
     print(f"ADS native runtime: {ADS_NATIVE_RUNTIME_MODE}")
+    print(f"ADS product: {de.product_version()}")
+    print(f"EM Tools: {emtools.version()}")
+
+
+def _require_open_library(library_name: str, design_name: str) -> object:
+    if not de.library_is_open(library_name):
+        raise RuntimeError(
+            f"Library {library_name!r} from {design_name!r} is not open. "
+            "Run inside ADS with the correct workspace open, or pass --workspace "
+            "with the workspace that defines this library."
+        )
+    return de.Library.get(library_name)
+
+
+def _read_source_parameter_names(source_design: str) -> list[str]:
+    design = db.open_design(source_design, "ReadOnly")
+    if not design.is_supermaster:
+        raise RuntimeError(
+            f"Source layout {source_design!r} is not a PCell supermaster. "
+            "Apply EM > Component > Parameters..., save the layout, and retry."
+        )
+
+    parameter_names = [parameter.name for parameter in design.pcell_parameters]
+    if not parameter_names:
+        raise RuntimeError(
+            f"Source layout {source_design!r} has no top-level PCell parameters. "
+            "Reapply EM > Component > Parameters..., save the layout, and retry."
+        )
+    return parameter_names
+
+
+def _discover_rebuild_inputs(
+    source_design: str,
+) -> tuple[tuple[str, str, str], str, tuple[str, str], list[str]]:
+    source_library, source_cell_name, source_view_name = source_design.split(":")
+    source_lcv = (source_library, source_cell_name, source_view_name)
+    library = _require_open_library(source_library, source_design)
+    if not library.cell_exists(source_cell_name):
+        raise RuntimeError(f"Source cell does not exist: {source_design!r}.")
+
+    cell = library.cell(source_cell_name)
+    if not cell.view_exists(source_view_name):
+        raise RuntimeError(f"Source layout does not exist: {source_design!r}.")
+
+    parameter_names = _read_source_parameter_names(source_design)
+    emsetup_view_name = emtools.find_emsetup_view_name(source_lcv)
+    if not cell.view_exists(emsetup_view_name):
+        raise RuntimeError(
+            f"The active EM Setup {emsetup_view_name!r} reported for "
+            f"{source_design!r} does not exist."
+        )
+
+    substrate = emtools.get_substrate_info(
+        (source_library, source_cell_name, emsetup_view_name)
+    )
+    if len(substrate) != 2 or not all(substrate):
+        raise RuntimeError(
+            f"ADS returned invalid substrate information for {source_design!r}: "
+            f"{substrate!r}."
+        )
+    substrate_ls = (str(substrate[0]), str(substrate[1]))
+    return source_lcv, emsetup_view_name, substrate_ls, parameter_names
+
+
+def _safe_path_component(value: str) -> str:
+    safe_value = "".join(
+        character if character.isalnum() or character in "-_." else "_"
+        for character in value
+    )
+    return safe_value or "unnamed"
+
+
+def _planned_backup_path(
+    rfpro_lcv: tuple[str, str, str], backup_root: Path | None
+) -> Path:
+    if backup_root is None:
+        root = (
+            de.active_workspace().path
+            / ".rfpro-pcell-recovery"
+            / "view-backups"
+        )
+    else:
+        root = backup_root.expanduser().resolve()
+
+    library, cell, view = rfpro_lcv
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    return (
+        root
+        / _safe_path_component(library)
+        / _safe_path_component(cell)
+        / f"{_safe_path_component(view)}-{timestamp}"
+    )
+
+
+def _confirm_schema_rebuild(
+    rfpro_design: str,
+    source_design: str,
+    source_view_path: Path,
+    backup_path: Path,
+    parameter_names: list[str],
+    assume_yes: bool,
+) -> None:
+    print("Schema rebuild requested.")
+    print(f"  RFPro view: {rfpro_design}")
+    print(f"  Source layout: {source_design}")
+    print(f"  Existing view path: {source_view_path}")
+    print(f"  Backup destination: {backup_path}")
+    print(f"  New source parameters ({len(parameter_names)}):")
+    for name in parameter_names:
+        print(f"    {name}")
+    print("  RFPro analyses, sweeps, and local view settings may need recreation.")
+
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "Interactive confirmation is unavailable. Re-run with --yes after "
+            "reviewing the rebuild plan."
+        )
+    confirmation = input("Type REBUILD to continue: ")
+    if confirmation != "REBUILD":
+        raise RuntimeError("Schema rebuild cancelled; nothing was changed.")
+
+
+def _write_backup_manifest(
+    backup_path: Path,
+    rfpro_design: str,
+    source_design: str,
+    emsetup_view_name: str,
+    substrate_ls: tuple[str, str],
+    parameter_names: list[str],
+) -> None:
+    manifest = {
+        "created": datetime.now().astimezone().isoformat(),
+        "ads_product": de.product_version(),
+        "emtools": emtools.version(),
+        "rfpro_design": rfpro_design,
+        "source_design": source_design,
+        "emsetup_view": emsetup_view_name,
+        "substrate": list(substrate_ls),
+        "source_parameters": parameter_names,
+    }
+    manifest_path = backup_path / "rfpro-recovery-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _rebuild_rfpro_schema(
+    rfpro_lcv: tuple[str, str, str],
+    rfpro_design: str,
+    source_design: str,
+    backup_root: Path | None,
+    assume_yes: bool,
+) -> None:
+    library_name, cell_name, view_name = rfpro_lcv
+    library = _require_open_library(library_name, rfpro_design)
+    if not library.is_writable:
+        raise RuntimeError(
+            f"Library {library_name!r} is read-only; the RFPro view cannot be rebuilt."
+        )
+    if not library.cell_exists(cell_name):
+        raise RuntimeError(f"RFPro cell does not exist: {rfpro_design!r}.")
+
+    cell = library.cell(cell_name)
+    if not cell.view_exists(view_name):
+        raise RuntimeError(f"RFPro view does not exist: {rfpro_design!r}.")
+    old_view_path = cell.view(view_name).path
+    if not old_view_path.is_dir():
+        raise RuntimeError(
+            f"RFPro view path is not a directory: {old_view_path}."
+        )
+
+    (
+        source_lcv,
+        emsetup_view_name,
+        substrate_ls,
+        parameter_names,
+    ) = _discover_rebuild_inputs(source_design)
+    backup_path = _planned_backup_path(rfpro_lcv, backup_root)
+    _confirm_schema_rebuild(
+        rfpro_design,
+        source_design,
+        old_view_path,
+        backup_path,
+        parameter_names,
+        assume_yes,
+    )
+
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(old_view_path, backup_path)
+    _write_backup_manifest(
+        backup_path,
+        rfpro_design,
+        source_design,
+        emsetup_view_name,
+        substrate_ls,
+        parameter_names,
+    )
+    print(f"Existing RFPro view preserved at: {backup_path}")
+
+    cell.delete_view(view_name)
+    if cell.view_exists(view_name):
+        raise RuntimeError(
+            f"ADS did not remove {rfpro_design!r}; backup is at {backup_path}."
+        )
+
+    try:
+        emtools.create_empro_view(
+            rfpro_lcv,
+            "rfpro",
+            source_lcv,
+            substrate_ls,
+        )
+        emtools.update_empro_view(rfpro_lcv)
+    except Exception as error:
+        raise RuntimeError(
+            f"RFPro recreation failed after the original view was backed up. "
+            f"Preserved view: {backup_path}"
+        ) from error
+
+    if not cell.view_exists(view_name):
+        raise RuntimeError(
+            f"ADS reported no RFPro view after recreation: {rfpro_design!r}. "
+            f"Preserved view: {backup_path}"
+        )
+
+    print("Schema rebuild and final auxiliary-file refresh completed.")
+    print(f"Previous RFPro view backup: {backup_path}")
+    print("Open RFPro, verify Design Parameters, and recreate stale sweeps if needed.")
 
 
 def main() -> None:
@@ -501,16 +773,25 @@ def main() -> None:
     rfpro_lcv = (library, cell, view)
     _print_qt_runtime()
     workspace = _open_workspace_if_requested(arguments.workspace)
-    if not de.library_is_open(library):
-        raise RuntimeError(
-            f"Library {library!r} from --design {arguments.design!r} is not open. "
-            "Run inside ADS with the correct workspace open, or pass --workspace "
-            "with the workspace that defines this library."
-        )
+    _require_open_library(library, arguments.design)
 
-    print(f"Refreshing RFPro view {arguments.design} ...")
-    emtools.update_empro_view(rfpro_lcv)
-    print("Refresh completed. Open RFPro and inspect Design Parameters.")
+    if arguments.rebuild_schema:
+        assert arguments.source_design is not None
+        _rebuild_rfpro_schema(
+            rfpro_lcv,
+            arguments.design,
+            arguments.source_design,
+            arguments.backup_dir,
+            arguments.yes,
+        )
+    else:
+        print(f"Refreshing RFPro view {arguments.design} ...")
+        emtools.update_empro_view(rfpro_lcv)
+        print("Refresh completed. Open RFPro and inspect Design Parameters.")
+        print(
+            "If parameter names, types, order, or count changed, use "
+            "--rebuild-schema instead of repeating this update."
+        )
 
     # Keep a standalone-opened workspace alive until the refresh has finished.
     _ = workspace

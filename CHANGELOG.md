@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 1.8.0 - 2026-08-16
+
+- Separate value-only refreshes from destructive PCell parameter-schema
+  rebuilds.
+- Add `--rebuild-schema` with required `--source-design` input.
+- Validate the source layout's top-level PCell parameters before changing the
+  RFPro view.
+- Discover the active EM Setup and substrate through public EM Tools APIs.
+- Preserve the complete existing RFPro view and a JSON manifest before using
+  the public ADS delete/create APIs.
+- Print ADS and EM Tools versions in every refresh run.
+
 ## 1.7.0 - 2026-08-15
 
 - Automatically locate `libemViewsPlugin.so` on Linux before importing ADS EM
