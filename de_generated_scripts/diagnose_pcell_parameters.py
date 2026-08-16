@@ -324,9 +324,30 @@ def main() -> None:
 
     design = db.open_design(arguments.design, "ReadOnly")
     top_level_parameters = _parameter_pairs(design.pcell_parameters)
+    model_definition = design.model_def
+    item_definition_parameters = (
+        [parameter.name for parameter in model_definition.parameters]
+        if model_definition is not None
+        else []
+    )
 
     print(f"Layout: {arguments.design}")
     print(f"PCell supermaster: {design.is_supermaster}")
+    if design.is_supermaster:
+        pcell_info = db.PCellInfo(design=design)
+        print(f"PCell evaluator: {pcell_info.pcell_type}")
+        if pcell_info.ael_function:
+            print(f"PCell AEL function: {pcell_info.ael_function}")
+        artwork_args = list(pcell_info.artwork_args)
+        print(
+            "Selected artwork arguments: "
+            + (", ".join(artwork_args) if artwork_args else "all item parameters")
+        )
+    print(
+        f"Item-definition parameters ({len(item_definition_parameters)}):"
+    )
+    for name in item_definition_parameters:
+        print(f"  {name}")
     print(f"Top-level PCell parameters ({len(top_level_parameters)}):")
     for name, value in top_level_parameters:
         print(f"  {name} = {value}")
@@ -351,7 +372,10 @@ def main() -> None:
 
     if design.is_supermaster and top_level_parameters:
         print("RESULT: The source layout exposes top-level PCell parameters.")
-        print("NEXT: Reset .adsPcells, then update the RFPro view.")
+        print(
+            "NEXT: Run refresh_rfpro_view.py with --rebuild-schema so the "
+            "source PCell is re-registered before RFPro cache generation."
+        )
     elif design.is_supermaster:
         print("RESULT: The PCell exists, but its top-level parameter list is empty.")
         print("NEXT: Reapply EM > Component > Parameters..., save, and rerun.")

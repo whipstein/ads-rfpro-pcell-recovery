@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## 1.12.0 - 2026-08-16
+
+- Re-register only the specified source PCell supermaster, using its existing
+  public `PCellInfo`, before RFPro serializes its generated cache.
+- Preserve the existing AEL evaluator and selected artwork arguments while
+  refreshing the in-process PCell registration.
+- Print item-definition, selected-artwork, and stored PCell parameter schemas
+  so an empty RFPro tree cannot be mistaken for a healthy source handoff.
+- Verify that the rebuilt RFPro setup contains the exact requested source
+  layout and substrate pair before reporting completion.
+- Keep the targeted registration step ahead of RFPro backup and replacement;
+  failures leave the existing RFPro view untouched.
+
+## 1.11.0 - 2026-08-16
+
+- Read the substrate automatically from the existing RFPro view through the
+  public `EmproSetup.design_refs` API.
+- Match multi-design RFPro references to `--source-design`; refuse ambiguous
+  conflicting substrates instead of guessing.
+- Retain active EM Setup discovery as a fallback and keep `--substrate` and
+  `--em-setup-design` as explicit overrides.
+- Record and display the substrate source before replacing the RFPro view.
+
 ## 1.10.0 - 2026-08-16
 
 - Add `--lib` (`--library`) and `--cell` defaults to both production scripts.

@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.10.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.11.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -161,9 +161,10 @@ Use the normal refresh only when parameter names, types, order, and count are
 unchanged. Use `--rebuild-schema` after adding, removing, renaming, reordering,
 or changing the type of a parameter. Schema rebuild is intentionally explicit
 because it replaces the RFPro view and may invalidate analyses or sweeps.
-The rebuild normally discovers the active EM Setup from `--source-design`. If
-that layout has no active EM Setup, select one with `--em-setup-design`, or
-provide the existing RFPro substrate directly with `--substrate`.
+The rebuild normally reads the substrate directly from the existing RFPro
+view's public `EmproSetup.design_refs`. It matches the RFPro design reference to
+`--source-design` when possible. An active EM Setup is used only as a fallback.
+Use `--em-setup-design` or `--substrate` only to override automatic discovery.
 
 In the examples below, `python` means the Python executable bundled with the
 same ADS installation that owns the workspace—not a system Python installation.
@@ -275,11 +276,16 @@ closed, execute the script through the supported in-application path, and omit
 `--workspace` because the correct workspace is already active.
 
 The script validates that the source layout is a PCell supermaster with
-top-level parameters. It normally uses the active EM Setup to discover the
-substrate, prints the rebuild plan, and requires typing `REBUILD`.
+top-level parameters. Before touching the RFPro view, it re-registers only the
+specified source PCell from its saved `PCellInfo` and saves that supermaster.
+This refreshes the in-process PCell registry used by RFPro while preserving the
+AEL evaluator and its selected artwork arguments. The confirmation prompt
+lists this source action as well as the RFPro replacement. It also reads the
+layout and substrate references from the existing RFPro view and prints the
+resolved substrate and its source in the rebuild plan.
 
-If ADS reports `Could not find EM Setup view for layout`, either select an
-existing EM Setup explicitly:
+If the existing RFPro setup cannot be read, the script tries the active EM
+Setup automatically. To override both, select an EM Setup explicitly:
 
 ```bash
 python de_generated_scripts/refresh_rfpro_view.py \
@@ -292,8 +298,7 @@ python de_generated_scripts/refresh_rfpro_view.py \
   --workspace "/absolute/path/to/workspace_wrk"
 ```
 
-Or bypass EM Setup discovery and supply the substrate already used by the RFPro
-view:
+Or supply the substrate directly as a final override:
 
 ```bash
 python de_generated_scripts/refresh_rfpro_view.py \
@@ -307,18 +312,24 @@ python de_generated_scripts/refresh_rfpro_view.py \
 ```
 
 These options are mutually exclusive. The explicit EM Setup may be on a
-different cell from the parameterized source layout. `--substrate` must use the
-exact library and substrate name configured in the existing RFPro view.
+different cell from the parameterized source layout. In multi-design RFPro
+views, the script selects the reference matching `--source-design`. If no
+reference matches, it proceeds only when all RFPro references use the same
+substrate; otherwise an explicit override is required.
 
 After confirmation the script:
 
-1. Copies the complete existing RFPro view to
+1. Re-registers the specified source PCell before changing the RFPro view.
+2. Copies the complete existing RFPro view to
    `WORKSPACE/.rfpro-pcell-recovery/view-backups/...`.
-2. Adds `rfpro-recovery-manifest.json` to the backup with the source parameter
-   names, ADS version, EM Setup, and substrate.
-3. Deletes the stale RFPro view through `Cell.delete_view()`.
-4. Recreates it through `create_empro_view()` and performs one final
+3. Adds `rfpro-recovery-manifest.json` to the backup with the source parameter
+   names, ADS version, substrate, and whether it came from RFPro, EM Setup, or
+   a command-line override.
+4. Deletes the stale RFPro view through `Cell.delete_view()`.
+5. Recreates it through `create_empro_view()` and performs one final
    `update_empro_view()` call.
+6. Reopens the generated RFPro setup and verifies that it contains the exact
+   requested source-layout and substrate reference before reporting success.
 
 Use `--backup-dir` to place the backup elsewhere. Use `--yes` only after
 reviewing the command; it skips the interactive confirmation. This operation

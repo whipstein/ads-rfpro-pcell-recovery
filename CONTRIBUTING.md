@@ -37,14 +37,15 @@ python de_generated_scripts/refresh_rfpro_view.py \
   --lib "MY_LIB" --cell "MY_CELL" \
   --design "MY_RFPRO_VIEW" \
   --source-design "layout" \
-  --substrate "tech.subst" \
   --rebuild-schema \
   --workspace "/path/to/workspace_wrk"
 ```
 
 Close RFPro before running the refresh. Runtime success cannot be established
 by syntax compilation alone because Qt and ADS native-library loading happen on
-the target machine.
+the target machine. Confirm that the rebuild output shows identical expected
+parameter names under `Stored PCell parameters after`, then inspect RFPro's
+Design Parameters tree.
 
 ## API changes
 

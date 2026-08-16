@@ -59,7 +59,7 @@
       ]
     },
     {
-      "name": "ADS: Rebuild RFPro schema (explicit substrate)",
+      "name": "ADS: Rebuild RFPro schema (substrate override)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/de_generated_scripts/refresh_rfpro_view.py",

@@ -566,8 +566,8 @@ def _parse_arguments() -> argparse.Namespace:
         type=_design_argument,
         metavar="[LIB:[CELL:]]VIEW",
         help=(
-            "exact EM Setup cellview from which to read the substrate; useful "
-            "when it is not active on --source-design"
+            "exact EM Setup cellview from which to override the substrate read "
+            "from the existing RFPro view"
         ),
     )
     substrate_source.add_argument(
@@ -575,8 +575,8 @@ def _parse_arguments() -> argparse.Namespace:
         type=_substrate_argument,
         metavar="[LIB:]SUBSTRATE",
         help=(
-            "substrate library and name to use directly; bypasses EM Setup "
-            "discovery"
+            "substrate library and name to use as a final override; normally "
+            "read from the existing RFPro view"
         ),
     )
     parser.add_argument(
@@ -679,15 +679,19 @@ def _require_open_library(library_name: str, design_name: str) -> object:
     return de.Library.get(library_name)
 
 
+def _pcell_parameter_names(design: db.Design) -> list[str]:
+    return [parameter.name for parameter in design.pcell_parameters]
+
+
 def _read_source_parameter_names(source_design: str) -> list[str]:
-    design = db.open_design(source_design, "ReadOnly")
+    design = db.open_design(source_design, de.db.DesignMode.READ_ONLY)
     if not design.is_supermaster:
         raise RuntimeError(
             f"Source layout {source_design!r} is not a PCell supermaster. "
             "Apply EM > Component > Parameters..., save the layout, and retry."
         )
 
-    parameter_names = [parameter.name for parameter in design.pcell_parameters]
+    parameter_names = _pcell_parameter_names(design)
     if not parameter_names:
         raise RuntimeError(
             f"Source layout {source_design!r} has no top-level PCell parameters. "
@@ -696,11 +700,212 @@ def _read_source_parameter_names(source_design: str) -> list[str]:
     return parameter_names
 
 
+def _reregister_source_pcell(source_design: str) -> list[str]:
+    """Reapply the saved PCell definition to one source supermaster.
+
+    RFPro serializes the PCell registry held by the current ADS process. A
+    source layout can therefore show the correct saved parameters while the
+    process still supplies stale registration data to ``update_empro_view``.
+    Reapplying a copy of the layout's own PCellInfo is the public-API
+    equivalent of accepting Customize PCell and saving the layout. It changes
+    neither the evaluator nor its selected artwork arguments.
+    """
+
+    try:
+        design = db.open_design(source_design, de.db.DesignMode.APPEND)
+    except Exception as error:
+        raise RuntimeError(
+            f"Could not open source layout {source_design!r} for targeted "
+            "PCell re-registration. Save and close that layout window, or "
+            "run the schema rebuild inside its owning ADS session."
+        ) from error
+
+    if not design.is_supermaster:
+        raise RuntimeError(
+            f"Source layout {source_design!r} is not a PCell supermaster."
+        )
+
+    model_definition = design.model_def
+    if model_definition is None:
+        raise RuntimeError(
+            f"Source cell for {source_design!r} has no loaded item definition. "
+            "Open File > Design Parameters, click OK, save, and retry."
+        )
+
+    item_definition_names = [
+        parameter.name for parameter in model_definition.parameters
+    ]
+    before_names = _pcell_parameter_names(design)
+    if not before_names:
+        raise RuntimeError(
+            f"Source layout {source_design!r} has no stored PCell parameters."
+        )
+
+    pcell_info = db.PCellInfo(design=design)
+    evaluator = str(pcell_info.pcell_type)
+    ael_function = pcell_info.ael_function
+    artwork_args = list(pcell_info.artwork_args)
+
+    try:
+        pcell_info.make_pcell(design)
+        design.save_design()
+    except Exception as error:
+        raise RuntimeError(
+            f"ADS could not re-register and save the source PCell "
+            f"{source_design!r}. The RFPro view has not been replaced."
+        ) from error
+
+    after_names = _pcell_parameter_names(design)
+    if not after_names:
+        raise RuntimeError(
+            f"Source PCell {source_design!r} became empty after "
+            "re-registration. The RFPro view has not been replaced."
+        )
+
+    print("Targeted source PCell registration refreshed:")
+    print(f"  Source: {source_design}")
+    print(f"  Evaluator: {evaluator}")
+    if ael_function:
+        print(f"  AEL function: {ael_function}")
+    print(
+        "  Selected artwork arguments: "
+        + (", ".join(artwork_args) if artwork_args else "all item parameters")
+    )
+    print(
+        "  Item-definition parameters: "
+        + (", ".join(item_definition_names) if item_definition_names else "(none)")
+    )
+    print(f"  Stored PCell parameters before: {', '.join(before_names)}")
+    print(f"  Stored PCell parameters after: {', '.join(after_names)}")
+    return after_names
+
+
+def _design_ref_tuple(
+    design_ref: object,
+    attribute_name: str,
+    expected_length: int,
+) -> tuple[str, ...]:
+    try:
+        value = getattr(design_ref, attribute_name)
+        if callable(value):
+            value = value()
+        parts = tuple(str(part) for part in value)
+    except (AttributeError, TypeError) as error:
+        raise RuntimeError(
+            f"RFPro DesignRef has no usable {attribute_name!r} value."
+        ) from error
+    if len(parts) != expected_length or not all(parts):
+        raise RuntimeError(
+            f"RFPro DesignRef returned invalid {attribute_name}: {parts!r}."
+        )
+    return parts
+
+
+def _read_rfpro_substrate(
+    rfpro_lcv: tuple[str, str, str],
+    source_lcv: tuple[str, str, str],
+) -> tuple[tuple[str, str], tuple[str, str, str]]:
+    setup = emtools.EmproSetup(rfpro_lcv)
+    tool = str(setup.tool).strip().lower()
+    if tool != "rfpro":
+        raise RuntimeError(
+            f"{':'.join(rfpro_lcv)!r} is an {setup.tool!r} EM view, not RFPro."
+        )
+
+    design_refs = setup.design_refs
+    if not isinstance(design_refs, dict) or not design_refs:
+        raise RuntimeError(
+            f"RFPro view {':'.join(rfpro_lcv)!r} contains no design references."
+        )
+
+    references: list[
+        tuple[tuple[str, str, str], tuple[str, str]]
+    ] = []
+    for design_ref in design_refs.values():
+        layout = _design_ref_tuple(design_ref, "layout", 3)
+        substrate = _design_ref_tuple(design_ref, "substrate", 2)
+        references.append(
+            (
+                (layout[0], layout[1], layout[2]),
+                (substrate[0], substrate[1]),
+            )
+        )
+
+    matching = [reference for reference in references if reference[0] == source_lcv]
+    candidates = matching if matching else references
+    unique_substrates = {reference[1] for reference in candidates}
+    if len(unique_substrates) != 1:
+        details = ", ".join(
+            f"{':'.join(layout)} -> {substrate[0]}:{substrate[1]}"
+            for layout, substrate in candidates
+        )
+        raise RuntimeError(
+            "The existing RFPro view contains multiple applicable substrates; "
+            f"cannot choose safely: {details}."
+        )
+
+    substrate_ls = next(iter(unique_substrates))
+    referenced_layout = next(
+        layout for layout, substrate in candidates if substrate == substrate_ls
+    )
+    _require_open_library(substrate_ls[0], ":".join(substrate_ls))
+    return substrate_ls, referenced_layout
+
+
+def _verify_rebuilt_rfpro_reference(
+    rfpro_lcv: tuple[str, str, str],
+    source_lcv: tuple[str, str, str],
+    expected_substrate: tuple[str, str],
+) -> None:
+    """Verify the public RFPro setup points to the requested source exactly."""
+
+    setup = emtools.EmproSetup(rfpro_lcv)
+    design_refs = setup.design_refs
+    if not isinstance(design_refs, dict) or not design_refs:
+        raise RuntimeError(
+            f"Rebuilt RFPro view {':'.join(rfpro_lcv)!r} has no design references."
+        )
+
+    references: list[
+        tuple[tuple[str, str, str], tuple[str, str]]
+    ] = []
+    for design_ref in design_refs.values():
+        layout_parts = _design_ref_tuple(design_ref, "layout", 3)
+        substrate_parts = _design_ref_tuple(design_ref, "substrate", 2)
+        references.append(
+            (
+                (layout_parts[0], layout_parts[1], layout_parts[2]),
+                (substrate_parts[0], substrate_parts[1]),
+            )
+        )
+
+    if (source_lcv, expected_substrate) not in references:
+        details = ", ".join(
+            f"{':'.join(layout)} -> {substrate[0]}:{substrate[1]}"
+            for layout, substrate in references
+        )
+        raise RuntimeError(
+            "The rebuilt RFPro setup does not contain the requested source "
+            f"and substrate pair. Found: {details}."
+        )
+
+    print("Rebuilt RFPro design reference verified:")
+    print(f"  Layout: {':'.join(source_lcv)}")
+    print(f"  Substrate: {expected_substrate[0]}:{expected_substrate[1]}")
+
+
 def _discover_rebuild_inputs(
+    rfpro_lcv: tuple[str, str, str],
     source_design: str,
     emsetup_design: str | None,
     explicit_substrate: str | None,
-) -> tuple[tuple[str, str, str], str | None, tuple[str, str], list[str]]:
+) -> tuple[
+    tuple[str, str, str],
+    str | None,
+    tuple[str, str],
+    str,
+    list[str],
+]:
     source_library, source_cell_name, source_view_name = source_design.split(":")
     source_lcv = (source_library, source_cell_name, source_view_name)
     library = _require_open_library(source_library, source_design)
@@ -717,19 +922,43 @@ def _discover_rebuild_inputs(
         substrate_library, substrate_name = explicit_substrate.split(":")
         _require_open_library(substrate_library, explicit_substrate)
         substrate_ls = (substrate_library, substrate_name)
-        return source_lcv, None, substrate_ls, parameter_names
+        return (
+            source_lcv,
+            None,
+            substrate_ls,
+            "command-line --substrate override",
+            parameter_names,
+        )
 
     if emsetup_design is None:
         try:
-            emsetup_view_name = emtools.find_emsetup_view_name(source_lcv)
-        except RuntimeError as error:
-            raise RuntimeError(
-                f"Could not find an active EM Setup for {source_design!r}. "
-                "No RFPro view was changed. Pass --em-setup-design "
-                '"LIB:CELL:EM_SETUP_VIEW" to select one explicitly, or pass '
-                '--substrate "LIB:SUBSTRATE" to reuse the substrate configured '
-                "in the existing RFPro view."
-            ) from error
+            substrate_ls, referenced_layout = _read_rfpro_substrate(
+                rfpro_lcv,
+                source_lcv,
+            )
+            return (
+                source_lcv,
+                None,
+                substrate_ls,
+                (
+                    f"existing RFPro view {':'.join(rfpro_lcv)} "
+                    f"(layout reference {':'.join(referenced_layout)})"
+                ),
+                parameter_names,
+            )
+        except Exception as rfpro_error:
+            try:
+                emsetup_view_name = emtools.find_emsetup_view_name(source_lcv)
+            except RuntimeError as emsetup_error:
+                raise RuntimeError(
+                    "Could not obtain a substrate from either the existing "
+                    f"RFPro view or an active EM Setup for {source_design!r}. "
+                    "No RFPro view was changed. "
+                    f"RFPro setup: {rfpro_error} "
+                    f"EM Setup: {emsetup_error} "
+                    "Pass --em-setup-design to select an EM Setup explicitly, "
+                    "or use --substrate as a final override."
+                ) from emsetup_error
         emsetup_lcv = (
             source_library,
             source_cell_name,
@@ -762,7 +991,13 @@ def _discover_rebuild_inputs(
             f"{substrate!r}."
         )
     substrate_ls = (str(substrate[0]), str(substrate[1]))
-    return source_lcv, emsetup_design, substrate_ls, parameter_names
+    return (
+        source_lcv,
+        emsetup_design,
+        substrate_ls,
+        f"EM Setup {emsetup_design}",
+        parameter_names,
+    )
 
 
 def _safe_path_component(value: str) -> str:
@@ -802,6 +1037,7 @@ def _confirm_schema_rebuild(
     backup_path: Path,
     emsetup_design: str | None,
     substrate_ls: tuple[str, str],
+    substrate_source: str,
     parameter_names: list[str],
     assume_yes: bool,
 ) -> None:
@@ -810,11 +1046,16 @@ def _confirm_schema_rebuild(
     print(f"  Source layout: {source_design}")
     print(f"  Existing view path: {source_view_path}")
     print(f"  Backup destination: {backup_path}")
-    print(f"  EM Setup: {emsetup_design or 'not used (explicit substrate)'}")
+    print(f"  EM Setup: {emsetup_design or 'not used'}")
     print(f"  Substrate: {substrate_ls[0]}:{substrate_ls[1]}")
+    print(f"  Substrate source: {substrate_source}")
     print(f"  New source parameters ({len(parameter_names)}):")
     for name in parameter_names:
         print(f"    {name}")
+    print(
+        "  Source action: re-register this PCell from its existing saved "
+        "PCellInfo and save it"
+    )
     print("  RFPro analyses, sweeps, and local view settings may need recreation.")
 
     if assume_yes:
@@ -835,6 +1076,7 @@ def _write_backup_manifest(
     source_design: str,
     emsetup_design: str | None,
     substrate_ls: tuple[str, str],
+    substrate_source: str,
     parameter_names: list[str],
 ) -> None:
     manifest = {
@@ -848,6 +1090,7 @@ def _write_backup_manifest(
             emsetup_design.split(":")[2] if emsetup_design is not None else None
         ),
         "substrate": list(substrate_ls),
+        "substrate_source": substrate_source,
         "source_parameters": parameter_names,
     }
     manifest_path = backup_path / "rfpro-recovery-manifest.json"
@@ -888,8 +1131,10 @@ def _rebuild_rfpro_schema(
         source_lcv,
         resolved_emsetup_design,
         substrate_ls,
+        substrate_source,
         parameter_names,
     ) = _discover_rebuild_inputs(
+        rfpro_lcv,
         source_design,
         emsetup_design,
         explicit_substrate,
@@ -902,9 +1147,21 @@ def _rebuild_rfpro_schema(
         backup_path,
         resolved_emsetup_design,
         substrate_ls,
+        substrate_source,
         parameter_names,
         assume_yes,
     )
+
+    # Refresh only the specified source PCell in the process that will write
+    # the RFPro cache. Confirmation happens first; the existing RFPro view is
+    # still untouched if registration fails.
+    refreshed_parameter_names = _reregister_source_pcell(source_design)
+    if refreshed_parameter_names != parameter_names:
+        raise RuntimeError(
+            "Targeted PCell re-registration changed the source parameter "
+            "schema. The RFPro view was not replaced. Review the printed "
+            "before/after lists and rerun the same rebuild command."
+        )
 
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(old_view_path, backup_path)
@@ -914,6 +1171,7 @@ def _rebuild_rfpro_schema(
         source_design,
         resolved_emsetup_design,
         substrate_ls,
+        substrate_source,
         parameter_names,
     )
     print(f"Existing RFPro view preserved at: {backup_path}")
@@ -932,6 +1190,11 @@ def _rebuild_rfpro_schema(
             substrate_ls,
         )
         emtools.update_empro_view(rfpro_lcv)
+        _verify_rebuilt_rfpro_reference(
+            rfpro_lcv,
+            source_lcv,
+            substrate_ls,
+        )
     except Exception as error:
         raise RuntimeError(
             f"RFPro recreation failed after the original view was backed up. "
@@ -945,8 +1208,9 @@ def _rebuild_rfpro_schema(
         )
 
     print("Schema rebuild and final auxiliary-file refresh completed.")
+    print("The specified source PCell was re-registered before cache generation.")
     print(f"Previous RFPro view backup: {backup_path}")
-    print("Open RFPro, verify Design Parameters, and recreate stale sweeps if needed.")
+    print("Open RFPro and verify Design Parameters before recreating any sweeps.")
 
 
 def main() -> None:
