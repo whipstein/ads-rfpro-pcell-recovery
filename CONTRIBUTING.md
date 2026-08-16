@@ -49,9 +49,9 @@ runpy.run_path(
 Save and close the source layout and target RFPro view before running a schema
 rebuild. Other RFPro simulations may remain open. Runtime success cannot be
 established by syntax compilation alone because Qt and ADS native-library
-loading happen on the target machine. Confirm that the rebuild output shows
-identical expected entries under `Stored PCell schema before` and `Stored PCell
-schema after`, then inspect RFPro's Design Parameters tree.
+loading happen on the target machine. Confirm that the rebuild plan lists the
+expected source parameters and reports read-only source validation, then inspect
+RFPro's Design Parameters tree.
 
 ## API changes
 

@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## 1.14.0 - 2026-08-16
+
+- Remove the `PCellInfo.make_pcell()` source re-registration step. ADS
+  documents this API as converting a design into a PCell supermaster, not as a
+  registration refresh, and it can regenerate an EM-parameterized AEL PCell
+  with a different schema.
+- Keep the source layout read-only throughout schema recovery and rebuild only
+  the specified RFPro view through `create_empro_view()` and
+  `update_empro_view()`.
+- Print the package version at startup so an older copied script is immediately
+  distinguishable from the current repository version.
+- Continue requiring the saved source layout and target RFPro view to be closed
+  while allowing unrelated RFPro simulations in the workspace to remain open.
+
 ## 1.13.0 - 2026-08-16
 
 - Require `--rebuild-schema` to execute inside the live ADS application and

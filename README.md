@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.13.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.14.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -294,18 +294,15 @@ If an older package run already reported that re-registration changed the
 schema, open the source layout first, reapply the intended definitions through
 **EM > Component > Parameters...**, verify **File > Customize PCell**, save, and
 close that layout. Version 1.12 saved before detecting the mismatch; version
-1.13 performs the comparison before saving and reverts any mismatch.
+1.13 reverted the mismatch. Version 1.14 removes PCell re-registration entirely.
 
 The script validates that the source layout is a PCell supermaster with
-top-level parameters. Before touching the RFPro view, it re-registers only the
-specified source PCell from its saved `PCellInfo` and saves that supermaster.
-This refreshes the in-process PCell registry used by RFPro while preserving the
-AEL evaluator and its selected artwork arguments. It compares parameter names
-and types before saving; a mismatch reverts the source and leaves RFPro
-untouched. The confirmation prompt lists this source action as well as the
-RFPro replacement. It also reads the layout and substrate references from the
-existing RFPro view and prints the resolved substrate and its source in the
-rebuild plan.
+top-level parameters using read-only access. It does not call
+`PCellInfo.make_pcell()`: that API converts a design into a PCell supermaster
+and is not a registration-refresh operation. The source layout, its AEL
+evaluator, and its parameters are therefore never modified by the rebuild.
+The script reads the layout and substrate references from the existing RFPro
+view and prints the resolved substrate and its source in the rebuild plan.
 
 If the existing RFPro setup cannot be read, the script tries the active EM
 Setup automatically. To override both, select an EM Setup explicitly:
@@ -330,7 +327,7 @@ substrate; otherwise an explicit override is required.
 
 After confirmation the script:
 
-1. Re-registers the specified source PCell before changing the RFPro view.
+1. Validates the specified source PCell without modifying it.
 2. Copies the complete existing RFPro view to
    `WORKSPACE/.rfpro-pcell-recovery/view-backups/...`.
 3. Adds `rfpro-recovery-manifest.json` to the backup with the source parameter
