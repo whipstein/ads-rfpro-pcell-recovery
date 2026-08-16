@@ -409,6 +409,7 @@ def _create_or_reuse_qapplication() -> tuple[Path, Path | None, object, bool, bo
     QT_ENVIRONMENT_WAS_RESTORED,
 ) = _create_or_reuse_qapplication()
 
+from keysight.ads import ael
 import keysight.ads.de as de
 from keysight.ads.de import db_uu as db
 
@@ -728,7 +729,7 @@ def _require_design_closed_in_window(design_name: str) -> None:
         )
 
 
-def _read_source_parameter_names(source_design: str) -> list[str]:
+def _read_source_pcell_metadata(source_design: str) -> tuple[list[str], str]:
     design = db.open_design(source_design, de.db.DesignMode.READ_ONLY)
     if not design.is_supermaster:
         raise RuntimeError(
@@ -742,7 +743,160 @@ def _read_source_parameter_names(source_design: str) -> list[str]:
             f"Source layout {source_design!r} has no top-level PCell parameters. "
             "Reapply EM > Component > Parameters..., save the layout, and retry."
         )
-    return parameter_names
+
+    ael_function = db.PCellInfo(design=design).ael_function.strip()
+    if not ael_function:
+        raise RuntimeError(
+            f"Source layout {source_design!r} has no AEL PCell generator "
+            "function. The EM Component parameterization must remain an AEL "
+            "Macro PCell. Reapply EM > Component > Parameters..., save the "
+            "layout, and retry."
+        )
+    return parameter_names, ael_function
+
+
+def _find_generated_source_ael(source_design: str) -> list[Path]:
+    library_name, cell_name, view_name = source_design.split(":")
+    library = _require_open_library(library_name, source_design)
+    if not library.is_writable:
+        raise RuntimeError(
+            f"Source library {library_name!r} is read-only; ADS cannot "
+            "recompile its generated AEL files."
+        )
+    if not library.cell_exists(cell_name):
+        raise RuntimeError(f"Source cell does not exist: {source_design!r}.")
+
+    cell = library.cell(cell_name)
+    if not cell.view_exists(view_name):
+        raise RuntimeError(f"Source view does not exist: {source_design!r}.")
+
+    cell_path = Path(cell.path).resolve()
+    view_path = Path(cell.view(view_name).path).resolve()
+    generated_files: list[Path] = []
+    for filename in ("itemdef.ael", "artwork.ael"):
+        direct_candidates = []
+        for directory in (cell_path, view_path):
+            candidate = directory / filename
+            if candidate.is_file() and candidate not in direct_candidates:
+                direct_candidates.append(candidate)
+
+        matches = direct_candidates
+        if not matches:
+            matches = sorted(
+                {
+                    path.resolve()
+                    for path in cell_path.rglob(filename)
+                    if path.is_file()
+                }
+            )
+
+        if not matches:
+            raise RuntimeError(
+                f"Could not find generated {filename} under source cell "
+                f"{cell_path}. Reapply EM > Component > Parameters..., save "
+                "and close the layout, then retry. The RFPro view was not "
+                "changed."
+            )
+        if len(matches) != 1:
+            locations = "\n  ".join(str(path) for path in matches)
+            raise RuntimeError(
+                f"Found multiple generated {filename} files for "
+                f"{source_design!r}:\n  {locations}\nThe script will not guess "
+                "which component definition ADS should load."
+            )
+        generated_files.append(matches[0])
+
+    return generated_files
+
+
+def _backup_generated_source_ael(
+    generated_files: list[Path], backup_path: Path
+) -> None:
+    destination = backup_path / "source-ael"
+    destination.mkdir()
+    for source in generated_files:
+        shutil.copy2(source, destination / source.name)
+        compiled = source.with_suffix(".atf")
+        if compiled.is_file():
+            shutil.copy2(compiled, destination / compiled.name)
+
+
+def _reload_generated_source_ael(
+    source_design: str,
+    generated_files: list[Path],
+    expected_ael_function: str,
+) -> None:
+    """Force and transactionally validate targeted AEL recompilation."""
+
+    library_name = source_design.split(":", 1)[0]
+    staged_compiled: dict[Path, Path | None] = {}
+    token = f"{os.getpid()}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+    try:
+        for source in generated_files:
+            compiled = source.with_suffix(".atf")
+            staged: Path | None = None
+            if compiled.is_file():
+                staged = compiled.with_name(
+                    f".{compiled.name}.rfpro-recovery-{token}"
+                )
+                compiled.replace(staged)
+            staged_compiled[compiled] = staged
+
+        for source in generated_files:
+            compiled = source.with_suffix(".atf")
+            print(
+                f"Recompiling generated AEL in {library_name!r}: {source}"
+            )
+            ael.call.load(str(source.with_suffix("")), library_name)
+            if not compiled.is_file():
+                raise RuntimeError(
+                    f"ADS loaded {source} but did not create {compiled.name}."
+                )
+
+        try:
+            function_is_defined = bool(
+                ael.call(vocab=library_name).is_function_defined(
+                    expected_ael_function
+                )
+            )
+        except Exception as error:
+            print(
+                "AEL generator lookup could not be queried after reload: "
+                f"{error}"
+            )
+        else:
+            print(
+                f"AEL generator {expected_ael_function!r} defined in "
+                f"{library_name!r}: {function_is_defined}"
+            )
+            if not function_is_defined:
+                raise RuntimeError(
+                    f"Generated AEL recompiled, but PCell function "
+                    f"{expected_ael_function!r} is not defined in library "
+                    f"vocabulary {library_name!r}."
+                )
+    except Exception as error:
+        for compiled, staged in staged_compiled.items():
+            try:
+                if compiled.exists():
+                    compiled.unlink()
+                if staged is not None and staged.exists():
+                    staged.replace(compiled)
+            except OSError as rollback_error:
+                raise RuntimeError(
+                    "Generated AEL reload failed and the previous compiled "
+                    f"file could not be restored: {compiled}. Restore it from "
+                    "the source-ael directory in the printed RFPro backup."
+                ) from rollback_error
+        raise RuntimeError(
+            "Targeted generated-AEL recompilation failed. Previous compiled "
+            "files were restored and the RFPro view was not changed."
+        ) from error
+    else:
+        for staged in staged_compiled.values():
+            if staged is not None:
+                staged.unlink()
 
 
 def _design_ref_tuple(
@@ -870,6 +1024,7 @@ def _discover_rebuild_inputs(
     tuple[str, str],
     str,
     list[str],
+    str,
 ]:
     source_library, source_cell_name, source_view_name = source_design.split(":")
     source_lcv = (source_library, source_cell_name, source_view_name)
@@ -881,7 +1036,7 @@ def _discover_rebuild_inputs(
     if not cell.view_exists(source_view_name):
         raise RuntimeError(f"Source layout does not exist: {source_design!r}.")
 
-    parameter_names = _read_source_parameter_names(source_design)
+    parameter_names, ael_function = _read_source_pcell_metadata(source_design)
 
     if explicit_substrate is not None:
         substrate_library, substrate_name = explicit_substrate.split(":")
@@ -893,6 +1048,7 @@ def _discover_rebuild_inputs(
             substrate_ls,
             "command-line --substrate override",
             parameter_names,
+            ael_function,
         )
 
     if emsetup_design is None:
@@ -910,6 +1066,7 @@ def _discover_rebuild_inputs(
                     f"(layout reference {':'.join(referenced_layout)})"
                 ),
                 parameter_names,
+                ael_function,
             )
         except Exception as rfpro_error:
             try:
@@ -962,6 +1119,7 @@ def _discover_rebuild_inputs(
         substrate_ls,
         f"EM Setup {emsetup_design}",
         parameter_names,
+        ael_function,
     )
 
 
@@ -1004,6 +1162,8 @@ def _confirm_schema_rebuild(
     substrate_ls: tuple[str, str],
     substrate_source: str,
     parameter_names: list[str],
+    ael_function: str,
+    generated_ael_files: list[Path],
     assume_yes: bool,
 ) -> None:
     print("Schema rebuild requested.")
@@ -1017,7 +1177,14 @@ def _confirm_schema_rebuild(
     print(f"  New source parameters ({len(parameter_names)}):")
     for name in parameter_names:
         print(f"    {name}")
-    print("  Source action: read-only validation; the layout will not be modified")
+    print(f"  AEL PCell generator: {ael_function}")
+    print("  Generated AEL files to recompile and reload:")
+    for generated_file in generated_ael_files:
+        print(f"    {generated_file}")
+    print(
+        "  Source action: preserve and rebuild generated .atf files; the "
+        "layout database will not be modified"
+    )
     print("  RFPro analyses, sweeps, and local view settings may need recreation.")
 
     if assume_yes:
@@ -1040,6 +1207,8 @@ def _write_backup_manifest(
     substrate_ls: tuple[str, str],
     substrate_source: str,
     parameter_names: list[str],
+    ael_function: str,
+    generated_ael_files: list[Path],
 ) -> None:
     manifest = {
         "created": datetime.now().astimezone().isoformat(),
@@ -1054,6 +1223,8 @@ def _write_backup_manifest(
         "substrate": list(substrate_ls),
         "substrate_source": substrate_source,
         "source_parameters": parameter_names,
+        "source_ael_function": ael_function,
+        "source_ael_files": [str(path) for path in generated_ael_files],
     }
     manifest_path = backup_path / "rfpro-recovery-manifest.json"
     manifest_path.write_text(
@@ -1097,12 +1268,14 @@ def _rebuild_rfpro_schema(
         substrate_ls,
         substrate_source,
         parameter_names,
+        ael_function,
     ) = _discover_rebuild_inputs(
         rfpro_lcv,
         source_design,
         emsetup_design,
         explicit_substrate,
     )
+    generated_ael_files = _find_generated_source_ael(source_design)
     backup_path = _planned_backup_path(rfpro_lcv, backup_root)
     _confirm_schema_rebuild(
         rfpro_design,
@@ -1113,6 +1286,8 @@ def _rebuild_rfpro_schema(
         substrate_ls,
         substrate_source,
         parameter_names,
+        ael_function,
+        generated_ael_files,
         assume_yes,
     )
 
@@ -1121,6 +1296,7 @@ def _rebuild_rfpro_schema(
     # refresh and can replace an EM Component parameter selection.
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(old_view_path, backup_path)
+    _backup_generated_source_ael(generated_ael_files, backup_path)
     _write_backup_manifest(
         backup_path,
         rfpro_design,
@@ -1129,8 +1305,30 @@ def _rebuild_rfpro_schema(
         substrate_ls,
         substrate_source,
         parameter_names,
+        ael_function,
+        generated_ael_files,
     )
     print(f"Existing RFPro view preserved at: {backup_path}")
+
+    _reload_generated_source_ael(
+        source_design,
+        generated_ael_files,
+        ael_function,
+    )
+    reloaded_parameter_names, reloaded_ael_function = (
+        _read_source_pcell_metadata(source_design)
+    )
+    if (
+        reloaded_parameter_names != parameter_names
+        or reloaded_ael_function != ael_function
+    ):
+        raise RuntimeError(
+            "Generated AEL reloaded, but the source PCell metadata changed "
+            "unexpectedly. The RFPro view was not changed. Review the "
+            "before/after component definition and restore the generated AEL "
+            f"from {backup_path / 'source-ael'}."
+        )
+    print("Generated AEL reload preserved the source PCell parameter schema.")
 
     cell.delete_view(view_name)
     if cell.view_exists(view_name):
@@ -1164,7 +1362,10 @@ def _rebuild_rfpro_schema(
         )
 
     print("Schema rebuild and final auxiliary-file refresh completed.")
-    print("The source PCell was validated without modifying its definition.")
+    print(
+        "The generated source AEL was recompiled and reloaded; the source "
+        "layout database was not modified."
+    )
     print(f"Previous RFPro view backup: {backup_path}")
     print("Open RFPro and verify Design Parameters before recreating any sweeps.")
 

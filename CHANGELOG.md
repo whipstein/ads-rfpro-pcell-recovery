@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 1.15.0 - 2026-08-16
+
+- Force targeted recompilation of the source cell's generated `itemdef.ael`
+  and `artwork.ael`, then reload them in the live source-library AEL vocabulary
+  before recreating RFPro.
+- Preserve the generated `.ael` and previous `.atf` files under `source-ael/`
+  in the RFPro backup and transactionally restore compiled files when ADS load
+  or compilation fails.
+- Verify that the AEL generator remains defined and that the source PCell
+  parameter schema remains unchanged before deleting the existing RFPro view.
+- Keep unrelated RFPro simulations and the workspace-wide `.adsPcells` cache
+  untouched.
+
 ## 1.14.0 - 2026-08-16
 
 - Remove the `PCellInfo.make_pcell()` source re-registration step. ADS

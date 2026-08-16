@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.14.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.15.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -295,14 +295,21 @@ schema, open the source layout first, reapply the intended definitions through
 **EM > Component > Parameters...**, verify **File > Customize PCell**, save, and
 close that layout. Version 1.12 saved before detecting the mismatch; version
 1.13 reverted the mismatch. Version 1.14 removes PCell re-registration entirely.
+Version 1.15 adds targeted recompilation and live-library reload of the
+generated AEL component files before RFPro is recreated.
 
 The script validates that the source layout is a PCell supermaster with
 top-level parameters using read-only access. It does not call
 `PCellInfo.make_pcell()`: that API converts a design into a PCell supermaster
-and is not a registration-refresh operation. The source layout, its AEL
-evaluator, and its parameters are therefore never modified by the rebuild.
-The script reads the layout and substrate references from the existing RFPro
-view and prints the resolved substrate and its source in the rebuild plan.
+and is not a registration-refresh operation. The source layout database, AEL
+source text, and selected parameters are not modified. The script does replace
+the source cell's generated `itemdef.atf` and `artwork.atf` after preserving
+both the `.ael` and old `.atf` files in the RFPro backup. It loads
+`itemdef.ael` and `artwork.ael` through ADS in the source library vocabulary,
+which forces ADS to compile and register the same AEL Macro PCell code that
+RFPro consumes. The script reads the layout and substrate references from the
+existing RFPro view and prints the resolved substrate and its source in the
+rebuild plan.
 
 If the existing RFPro setup cannot be read, the script tries the active EM
 Setup automatically. To override both, select an EM Setup explicitly:
@@ -327,16 +334,20 @@ substrate; otherwise an explicit override is required.
 
 After confirmation the script:
 
-1. Validates the specified source PCell without modifying it.
+1. Validates the specified source PCell and locates its generated
+   `itemdef.ael` and `artwork.ael` files.
 2. Copies the complete existing RFPro view to
    `WORKSPACE/.rfpro-pcell-recovery/view-backups/...`.
-3. Adds `rfpro-recovery-manifest.json` to the backup with the source parameter
-   names, ADS version, substrate, and whether it came from RFPro, EM Setup, or
-   a command-line override.
-4. Deletes the stale RFPro view through `Cell.delete_view()`.
-5. Recreates it through `create_empro_view()` and performs one final
+3. Copies the generated `.ael` and existing `.atf` files into the backup's
+   `source-ael/` directory and adds `rfpro-recovery-manifest.json`.
+4. Transactionally recompiles and reloads only those generated files in the
+   live source-library AEL vocabulary. A compile/load failure restores the old
+   `.atf` files and leaves RFPro untouched.
+5. Rechecks that the PCell generator and parameter list are unchanged, then
+   deletes the stale RFPro view through `Cell.delete_view()`.
+6. Recreates it through `create_empro_view()` and performs one final
    `update_empro_view()` call.
-6. Reopens the generated RFPro setup and verifies that it contains the exact
+7. Reopens the generated RFPro setup and verifies that it contains the exact
    requested source-layout and substrate reference before reporting success.
 
 Use `--backup-dir` to place the backup elsewhere. Use `--yes` only after
@@ -383,6 +394,9 @@ Linux:
   RFPro simulations or result reviews are active.
 - For a schema rebuild, save and close the source layout and target RFPro view;
   unrelated RFPro simulations may remain open.
+- A schema rebuild replaces only the source cell's generated `itemdef.atf` and
+  `artwork.atf`; their prior versions are copied into the RFPro backup first.
+  It does not clear the workspace-wide `.adsPcells` directory.
 - A schema rebuild replaces the active RFPro view; analyses, sweeps, and local
   view settings may need recreation. The previous view is copied first.
 - APIs were checked against the portable ADS 2026 Update 2.1 reference. ADS was
