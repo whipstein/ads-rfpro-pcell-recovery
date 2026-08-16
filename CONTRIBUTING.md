@@ -55,8 +55,8 @@ expected source parameters and generated `itemdef.ael`/`artwork.ael` files.
 Confirm that ADS reports successful targeted AEL recompilation before it
 recreates RFPro, then inspect RFPro's Design Parameters tree.
 When validating `--bypass-pcell-cache`, also confirm that the printed
-`rfpCache_*` source alias exposes the exact original parameter list and that
-the rebuilt RFPro `DesignRef` points to that alias.
+`rfpCache_*` source-cell alias exposes the exact original parameter list and
+that the rebuilt RFPro `DesignRef` points to that alias cell.
 
 ## API changes
 

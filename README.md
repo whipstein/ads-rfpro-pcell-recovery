@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.16.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.17.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses and refreshes RFPro parameters created with
@@ -307,18 +307,20 @@ shows an empty **PCell** node, rerun with the cache-identity bypass:
 "--bypass-pcell-cache",
 ```
 
-This does not delete or rename `.adsPcells`. It creates a uniquely named layout
-view such as `rfpCache_20260816183000123456` in the original source cell using
-ADS `Design.save_design_as()`, copies and compiles that view's `artwork.ael`,
-and verifies that the new view has the same PCell generator and parameter list.
-The RFPro view is then recreated against the new source LCV, giving ADS a cache
-identity it has not serialized before. The original source layout is unchanged,
+This does not delete or rename `.adsPcells`. It creates a uniquely named source
+cell such as `rfpCache_20260816183000123456`, saves the original layout view into
+that cell using ADS `Design.save_design_as()`, copies and compiles that view's
+`artwork.ael`, and verifies that the copied design has the same PCell generator
+and parameter list. RFPro is then recreated against the new
+`LIB:rfpCache_*:VIEW` reference. The library and view alone are not sufficient
+cache boundaries for an ADS component; the new cell supplies a genuinely new
+component/PCell identity. The original source cell and layout are unchanged,
 and cache entries used by other RFPro cells are untouched.
 
-Keep the new `rfpCache_*` view while the rebuilt RFPro view references it. Each
-subsequent bypass run creates another unique view. An older alias may be removed
-manually only after no active or backed-up RFPro view references it; the script
-does not guess which aliases are safe to delete.
+Keep the new `rfpCache_*` cell while the rebuilt RFPro view references it. Each
+subsequent bypass run creates another unique cell. An older alias cell may be
+removed manually only after no active or backed-up RFPro view references it;
+the script does not guess which aliases are safe to delete.
 
 The script validates that the source layout is a PCell supermaster with
 top-level parameters using read-only access. It does not call
@@ -367,11 +369,13 @@ After confirmation the script:
    `.atf` files and leaves RFPro untouched.
 5. Rechecks that the PCell generator and parameter list are unchanged, then
    when `--bypass-pcell-cache` is selected, creates and verifies a versioned
-   source layout-view alias.
+   source-cell alias containing the copied layout view.
 6. Deletes the stale RFPro view through `Cell.delete_view()`.
 7. Recreates it through `create_empro_view()` and performs one final
    `update_empro_view()` call.
-8. Reopens the generated RFPro setup and verifies that it contains the exact
+8. Runs the ADS xxPro `emproView_prepareForOpen` stage used by the documented
+   in-application view-creation helper.
+9. Reopens the generated RFPro setup and verifies that it contains the exact
    requested source-layout and substrate reference before reporting success.
 
 Use `--backup-dir` to place the backup elsewhere. Use `--yes` only after
@@ -421,14 +425,15 @@ Linux:
 - A schema rebuild replaces only the source cell's generated `itemdef.atf` and
   `artwork.atf`; their prior versions are copied into the RFPro backup first.
   It does not clear the workspace-wide `.adsPcells` directory.
-- `--bypass-pcell-cache` adds one versioned layout view to the source cell and
+- `--bypass-pcell-cache` adds one versioned source cell to the library and
   changes only the rebuilt RFPro view's source reference. Do not delete the
-  referenced alias while that RFPro view is in use.
+  referenced alias cell while that RFPro view is in use.
 - A schema rebuild replaces the active RFPro view; analyses, sweeps, and local
   view settings may need recreation. The previous view is copied first.
 - APIs were checked against the portable ADS 2026 Update 2.1 reference. ADS was
-  unavailable on the packaging machine, so final Qt startup must be tested on
-  the target ADS installation.
+  unavailable on the packaging machine, so the final RFPro parameter tree must
+  be tested on the target ADS installation. The public ADS `emtools` API does
+  not expose the populated RFPro UI tree for automated verification.
 - ADS 2024 Update 2 documented the `.adsPcells` workaround. ADS 2025 Update 1
   states that all top-level and hierarchical PCell parameter changes are
   supported. The explicit rebuild mode remains a recovery path when an existing

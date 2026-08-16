@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 1.17.0 - 2026-08-16
+
+- Change `--bypass-pcell-cache` to create a unique source **cell** instead of a
+  second layout view in the original cell. RFPro can retain PCell state at the
+  component (`library:cell`) identity, so a view-only alias can still resolve
+  to the same empty parameter schema.
+- Save the parameterized layout into `LIB:rfpCache_*:VIEW`, copy and compile its
+  `artwork.ael`, and verify its PCell parameters before replacing RFPro.
+- Run ADS' documented xxPro `emproView_prepareForOpen` stage after the public
+  `create_empro_view()` and `update_empro_view()` calls.
+- Delete the entire partial alias cell on a failed preflight, leaving the
+  original source cell and existing RFPro view untouched.
+
 ## 1.16.0 - 2026-08-16
 
 - Add `--bypass-pcell-cache` for ADS 2026 Update 2.1 cases where a successful

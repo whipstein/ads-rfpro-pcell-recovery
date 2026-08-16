@@ -566,7 +566,7 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--bypass-pcell-cache",
         action="store_true",
         help=(
-            "create a versioned copy of the source layout view and point the "
+            "create a versioned copy of the source layout in a new cell and point the "
             "rebuilt RFPro view to that fresh LCV identity; use when ADS 2026 "
             "keeps an empty or stale schema for the original source"
         ),
@@ -1028,6 +1028,22 @@ def _verify_rebuilt_rfpro_reference(
     print(f"  Substrate: {expected_substrate[0]}:{expected_substrate[1]}")
 
 
+def _prepare_rfpro_view_for_open(
+    rfpro_lcv: tuple[str, str, str]
+) -> None:
+    """Run the same prepare stage as ADS' documented xxPro view helper."""
+
+    try:
+        de.ael.emproView_prepareForOpen(*rfpro_lcv)
+    except Exception as error:
+        raise RuntimeError(
+            "ADS recreated the RFPro setup but failed its prepare-for-open "
+            "stage. The preserved previous view is still available in the "
+            "printed backup."
+        ) from error
+    print(f"RFPro prepare-for-open completed: {':'.join(rfpro_lcv)}")
+
+
 def _discover_rebuild_inputs(
     rfpro_lcv: tuple[str, str, str],
     source_design: str,
@@ -1171,35 +1187,34 @@ def _planned_backup_path(
 def _planned_source_alias_lcv(
     source_lcv: tuple[str, str, str]
 ) -> tuple[str, str, str]:
-    library_name, cell_name, _ = source_lcv
+    library_name, _cell_name, view_name = source_lcv
     library = _require_open_library(library_name, ":".join(source_lcv))
-    cell = library.cell(cell_name)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")
     base_name = f"rfpCache_{timestamp}"
-    view_name = base_name
+    cell_name = base_name
     suffix = 1
-    while cell.view_exists(view_name):
-        view_name = f"{base_name}_{suffix}"
+    while library.cell_exists(cell_name):
+        cell_name = f"{base_name}_{suffix}"
         suffix += 1
     return library_name, cell_name, view_name
 
 
-def _create_source_alias_view(
+def _create_source_alias_cell(
     source_design: str,
     alias_lcv: tuple[str, str, str],
     generated_ael_files: list[Path],
     expected_parameter_names: list[str],
     expected_ael_function: str,
 ) -> None:
-    """Create a new source LCV identity without changing the original view."""
+    """Create a new source-cell identity without changing the original cell."""
 
-    library_name, cell_name, alias_view_name = alias_lcv
+    library_name, alias_cell_name, alias_view_name = alias_lcv
     library = _require_open_library(library_name, source_design)
-    cell = library.cell(cell_name)
     alias_design = ":".join(alias_lcv)
-    if cell.view_exists(alias_view_name):
+    if library.cell_exists(alias_cell_name):
         raise RuntimeError(
-            f"Planned cache-bypass source view already exists: {alias_design!r}."
+            f"Planned cache-bypass source cell already exists: "
+            f"{library_name}:{alias_cell_name!s}."
         )
 
     source_artwork = next(
@@ -1218,11 +1233,17 @@ def _create_source_alias_view(
         finally:
             source.close_design()
 
-        if not cell.view_exists(alias_view_name):
+        if not library.cell_exists(alias_cell_name):
+            raise RuntimeError(
+                f"ADS save_design_as() did not create cell "
+                f"{library_name}:{alias_cell_name}."
+            )
+        alias_cell = library.cell(alias_cell_name)
+        if not alias_cell.view_exists(alias_view_name):
             raise RuntimeError(
                 f"ADS save_design_as() did not create {alias_design!r}."
             )
-        alias_view = cell.view(alias_view_name)
+        alias_view = alias_cell.view(alias_view_name)
         if not alias_view.is_layout_view:
             raise RuntimeError(
                 f"Cache-bypass view is not a layout view: {alias_design!r}."
@@ -1258,20 +1279,20 @@ def _create_source_alias_view(
                 "PCell schema or AEL generator."
             )
     except Exception as error:
-        if cell.view_exists(alias_view_name):
+        if library.cell_exists(alias_cell_name):
             try:
-                cell.delete_view(alias_view_name)
+                library.delete_cell(alias_cell_name)
             except Exception as cleanup_error:
                 raise RuntimeError(
                     f"Cache-bypass source creation failed, and ADS could not "
-                    f"remove partial view {alias_design!r}."
+                    f"remove partial cell {library_name}:{alias_cell_name}."
                 ) from cleanup_error
         raise RuntimeError(
-            "Could not create a verified fresh source-view identity. The "
+            "Could not create a verified fresh source-cell identity. The "
             "existing RFPro view was not changed."
         ) from error
 
-    print("Fresh source-view identity created and verified:")
+    print("Fresh source-cell identity created and verified:")
     print(f"  {alias_design}")
     print(f"  Parameters: {', '.join(expected_parameter_names)}")
 
@@ -1308,15 +1329,15 @@ def _confirm_schema_rebuild(
     if source_alias_lcv is not None:
         print(
             "  Source action: preserve and rebuild generated .atf files, then "
-            "create a new layout view; the original layout remains unchanged"
+            "create a new source cell; the original cell remains unchanged"
         )
         print(
-            "  PCell-cache bypass: create versioned source layout view "
+            "  PCell-cache bypass: create versioned source cell/layout "
             f"{':'.join(source_alias_lcv)}"
         )
         print(
-            "  The rebuilt RFPro view will reference that alias; the original "
-            "source layout remains unchanged."
+            "  The rebuilt RFPro view will reference that cell alias; the "
+            "original source cell and layout remain unchanged."
         )
     else:
         print(
@@ -1484,7 +1505,7 @@ def _rebuild_rfpro_schema(
 
     effective_source_lcv = source_lcv
     if source_alias_lcv is not None:
-        _create_source_alias_view(
+        _create_source_alias_cell(
             source_design,
             source_alias_lcv,
             generated_ael_files,
@@ -1507,6 +1528,7 @@ def _rebuild_rfpro_schema(
             substrate_ls,
         )
         emtools.update_empro_view(rfpro_lcv)
+        _prepare_rfpro_view_for_open(rfpro_lcv)
         _verify_rebuilt_rfpro_reference(
             rfpro_lcv,
             effective_source_lcv,
@@ -1524,11 +1546,11 @@ def _rebuild_rfpro_schema(
             f"Preserved view: {backup_path}"
         )
 
-    print("Schema rebuild and final auxiliary-file refresh completed.")
+    print("Schema rebuild, auxiliary refresh, and open preparation completed.")
     if source_alias_lcv is not None:
         print(
             "The generated source AEL was recompiled and reloaded; the "
-            "original source layout was not modified."
+            "original source cell and layout were not modified."
         )
         print(
             "RFPro now references fresh source identity: "
@@ -1540,7 +1562,11 @@ def _rebuild_rfpro_schema(
             "layout database was not modified."
         )
     print(f"Previous RFPro view backup: {backup_path}")
-    print("Open RFPro and verify Design Parameters before recreating any sweeps.")
+    print(
+        "The ADS-side source and setup checks passed. Open RFPro and verify "
+        "Design Parameters; the RFPro UI parameter tree is not exposed by "
+        "the public ADS emtools API."
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
