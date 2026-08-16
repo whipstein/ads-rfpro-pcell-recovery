@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## 1.19.0 - 2026-08-16
+
+- Add `--recompile-source-ael` for vertex and perturb-point edits that change
+  generated AEL code without changing the PCell parameter schema.
+- Require the target RFPro view to reference the exact original source LCV
+  before recompiling, preventing another alias-layout regression.
+- Transactionally recompile and reload only the original cell's generated
+  `itemdef.ael` and `artwork.ael`, verify the schema is unchanged, then update
+  and prepare only the selected RFPro view without replacing it.
+- Keep the recompile mode inside the live ADS application so the source-library
+  AEL vocabulary and application callbacks are available.
+
+## 1.18.0 - 2026-08-16
+
+- Withdraw `--bypass-pcell-cache`. Copying the layout into an alias cell or
+  view can lose the original component context and leave RFPro with no rendered
+  layout.
+- Always recreate RFPro against the exact original source
+  `LIBRARY:CELL:VIEW`, and verify that exact public `DesignRef` before
+  completion.
+- Reject old commands containing the withdrawn option with a corrective error
+  instead of creating another alias.
+- Clarify that successful source metadata, AEL compilation, setup creation, and
+  `DesignRef` checks do not prove that RFPro populated its private Design
+  Parameters UI tree.
+
 ## 1.17.0 - 2026-08-16
 
 - Change `--bypass-pcell-cache` to create a unique source **cell** instead of a

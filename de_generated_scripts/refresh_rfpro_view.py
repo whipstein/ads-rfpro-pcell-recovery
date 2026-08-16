@@ -4,8 +4,9 @@ This self-contained script prepares the ADS native-library loader before
 importing emtools and applies a scoped Qt platform-plugin redirect only when it
 must create its own QApplication. An application owned by ADS is reused without
 restarting it. Designs may be fully qualified or may reuse the command-line
-library and cell defaults. Schema rebuilds must execute in the live ADS
-application. Save and close the source layout and target RFPro view first.
+library and cell defaults. Generated-AEL recompiles and schema rebuilds must
+execute in the live ADS application. Save and close the source layout and
+target RFPro view first.
 """
 
 from __future__ import annotations
@@ -514,8 +515,8 @@ def _resolve_substrate_argument(
 def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Refresh an existing ADS RFPro view, or rebuild it after a PCell "
-            "parameter-schema change."
+            "Refresh an existing ADS RFPro view, force-recompile its original "
+            "source AEL, or rebuild it after a PCell parameter-schema change."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -554,22 +555,28 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--recompile-source-ael",
+        action="store_true",
+        help=(
+            "force-recompile and reload the original source cell's generated "
+            "itemdef.ael and artwork.ael, then refresh this RFPro view without "
+            "replacing it; use for vertex or perturb-point code changes that "
+            "do not alter the parameter schema"
+        ),
+    )
+    parser.add_argument(
         "--source-design",
         type=_design_argument,
         metavar="[LIB:[CELL:]]VIEW",
         help=(
-            "parameterized source layout; required with --rebuild-schema and "
-            "may use --lib and --cell"
+            "parameterized source layout; required with --recompile-source-ael "
+            "or --rebuild-schema and may use --lib and --cell"
         ),
     )
     parser.add_argument(
         "--bypass-pcell-cache",
         action="store_true",
-        help=(
-            "create a versioned copy of the source layout in a new cell and point the "
-            "rebuilt RFPro view to that fresh LCV identity; use when ADS 2026 "
-            "keeps an empty or stale schema for the original source"
-        ),
+        help=argparse.SUPPRESS,
     )
     substrate_source = parser.add_mutually_exclusive_group()
     substrate_source.add_argument(
@@ -604,8 +611,26 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="skip the interactive REBUILD confirmation",
     )
     arguments = parser.parse_args(argv)
-    if arguments.rebuild_schema and arguments.source_design is None:
-        parser.error("--source-design is required with --rebuild-schema")
+    if arguments.rebuild_schema and arguments.recompile_source_ael:
+        parser.error(
+            "--recompile-source-ael and --rebuild-schema are mutually exclusive"
+        )
+    if (
+        arguments.rebuild_schema or arguments.recompile_source_ael
+    ) and arguments.source_design is None:
+        parser.error(
+            "--source-design is required with --recompile-source-ael or "
+            "--rebuild-schema"
+        )
+    if (
+        arguments.source_design is not None
+        and not arguments.rebuild_schema
+        and not arguments.recompile_source_ael
+    ):
+        parser.error(
+            "--source-design is only valid with --recompile-source-ael or "
+            "--rebuild-schema"
+        )
     if arguments.backup_dir is not None and not arguments.rebuild_schema:
         parser.error("--backup-dir is only valid with --rebuild-schema")
     if arguments.yes and not arguments.rebuild_schema:
@@ -614,8 +639,12 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--em-setup-design is only valid with --rebuild-schema")
     if arguments.substrate is not None and not arguments.rebuild_schema:
         parser.error("--substrate is only valid with --rebuild-schema")
-    if arguments.bypass_pcell_cache and not arguments.rebuild_schema:
-        parser.error("--bypass-pcell-cache is only valid with --rebuild-schema")
+    if arguments.bypass_pcell_cache:
+        parser.error(
+            "--bypass-pcell-cache was withdrawn because an alias cell/view can "
+            "lose the original component layout context. Remove the option; "
+            "schema rebuilds now always preserve the original source LCV."
+        )
 
     arguments.design = _resolve_design_argument(
         parser,
@@ -986,7 +1015,7 @@ def _read_rfpro_substrate(
     return substrate_ls, referenced_layout
 
 
-def _verify_rebuilt_rfpro_reference(
+def _verify_rfpro_reference(
     rfpro_lcv: tuple[str, str, str],
     source_lcv: tuple[str, str, str],
     expected_substrate: tuple[str, str],
@@ -997,7 +1026,7 @@ def _verify_rebuilt_rfpro_reference(
     design_refs = setup.design_refs
     if not isinstance(design_refs, dict) or not design_refs:
         raise RuntimeError(
-            f"Rebuilt RFPro view {':'.join(rfpro_lcv)!r} has no design references."
+            f"RFPro view {':'.join(rfpro_lcv)!r} has no design references."
         )
 
     references: list[
@@ -1019,11 +1048,11 @@ def _verify_rebuilt_rfpro_reference(
             for layout, substrate in references
         )
         raise RuntimeError(
-            "The rebuilt RFPro setup does not contain the requested source "
+            "The RFPro setup does not contain the requested source "
             f"and substrate pair. Found: {details}."
         )
 
-    print("Rebuilt RFPro design reference verified:")
+    print("RFPro design reference verified:")
     print(f"  Layout: {':'.join(source_lcv)}")
     print(f"  Substrate: {expected_substrate[0]}:{expected_substrate[1]}")
 
@@ -1037,11 +1066,80 @@ def _prepare_rfpro_view_for_open(
         de.ael.emproView_prepareForOpen(*rfpro_lcv)
     except Exception as error:
         raise RuntimeError(
-            "ADS recreated the RFPro setup but failed its prepare-for-open "
-            "stage. The preserved previous view is still available in the "
-            "printed backup."
+            "ADS failed the RFPro prepare-for-open stage for "
+            f"{':'.join(rfpro_lcv)!r}."
         ) from error
     print(f"RFPro prepare-for-open completed: {':'.join(rfpro_lcv)}")
+
+
+def _recompile_source_ael_and_refresh(
+    rfpro_lcv: tuple[str, str, str],
+    rfpro_design: str,
+    source_design: str,
+) -> None:
+    """Reload generated source AEL and refresh one same-LCV RFPro view."""
+
+    source_parts = source_design.split(":")
+    if len(source_parts) != 3:
+        raise RuntimeError(f"Invalid source layout identifier: {source_design!r}.")
+    source_lcv = (source_parts[0], source_parts[1], source_parts[2])
+
+    _require_design_closed_in_window(source_design)
+    parameter_names, ael_function = _read_source_pcell_metadata(source_design)
+    generated_ael_files = _find_generated_source_ael(source_design)
+
+    substrate_ls, referenced_layout = _read_rfpro_substrate(
+        rfpro_lcv,
+        source_lcv,
+    )
+    if referenced_layout != source_lcv:
+        raise RuntimeError(
+            f"RFPro {rfpro_design!r} currently references "
+            f"{':'.join(referenced_layout)!r}, not the requested original "
+            f"layout {source_design!r}. Run --rebuild-schema once against the "
+            "original source LCV before forcing an AEL refresh. No AEL file "
+            "was recompiled."
+        )
+
+    print("Targeted generated-AEL refresh requested.")
+    print(f"  RFPro view: {rfpro_design}")
+    print(f"  Original source layout: {source_design}")
+    print(f"  Parameters ({len(parameter_names)}): {', '.join(parameter_names)}")
+    print(f"  AEL PCell generator: {ael_function}")
+    print("  Generated AEL files:")
+    for generated_file in generated_ael_files:
+        print(f"    {generated_file}")
+
+    _reload_generated_source_ael(
+        source_design,
+        generated_ael_files,
+        ael_function,
+    )
+    reloaded_parameter_names, reloaded_ael_function = (
+        _read_source_pcell_metadata(source_design)
+    )
+    if (
+        reloaded_parameter_names != parameter_names
+        or reloaded_ael_function != ael_function
+    ):
+        raise RuntimeError(
+            "The generated AEL compiled, but its PCell parameter schema or "
+            "generator changed. RFPro was not refreshed because this mode is "
+            "only for vertex/perturb-point code changes with an unchanged "
+            "schema. Run --rebuild-schema against the same original source "
+            "LCV instead."
+        )
+
+    emtools.update_empro_view(rfpro_lcv)
+    _prepare_rfpro_view_for_open(rfpro_lcv)
+    _verify_rfpro_reference(rfpro_lcv, source_lcv, substrate_ls)
+
+    print("Targeted AEL recompile and RFPro auxiliary refresh completed.")
+    print("The RFPro view and original source layout LCV were not replaced.")
+    print(
+        "Open RFPro and verify the updated perturb-point/vertex behavior "
+        "before launching a new simulation."
+    )
 
 
 def _discover_rebuild_inputs(
@@ -1184,119 +1282,6 @@ def _planned_backup_path(
     )
 
 
-def _planned_source_alias_lcv(
-    source_lcv: tuple[str, str, str]
-) -> tuple[str, str, str]:
-    library_name, _cell_name, view_name = source_lcv
-    library = _require_open_library(library_name, ":".join(source_lcv))
-    timestamp = datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")
-    base_name = f"rfpCache_{timestamp}"
-    cell_name = base_name
-    suffix = 1
-    while library.cell_exists(cell_name):
-        cell_name = f"{base_name}_{suffix}"
-        suffix += 1
-    return library_name, cell_name, view_name
-
-
-def _create_source_alias_cell(
-    source_design: str,
-    alias_lcv: tuple[str, str, str],
-    generated_ael_files: list[Path],
-    expected_parameter_names: list[str],
-    expected_ael_function: str,
-) -> None:
-    """Create a new source-cell identity without changing the original cell."""
-
-    library_name, alias_cell_name, alias_view_name = alias_lcv
-    library = _require_open_library(library_name, source_design)
-    alias_design = ":".join(alias_lcv)
-    if library.cell_exists(alias_cell_name):
-        raise RuntimeError(
-            f"Planned cache-bypass source cell already exists: "
-            f"{library_name}:{alias_cell_name!s}."
-        )
-
-    source_artwork = next(
-        (path for path in generated_ael_files if path.name == "artwork.ael"),
-        None,
-    )
-    if source_artwork is None:
-        raise RuntimeError(
-            "Cannot create a cache-bypass source view without artwork.ael."
-        )
-
-    try:
-        source = db.open_design(source_design, de.db.DesignMode.READ_ONLY)
-        try:
-            source.save_design_as(alias_design)
-        finally:
-            source.close_design()
-
-        if not library.cell_exists(alias_cell_name):
-            raise RuntimeError(
-                f"ADS save_design_as() did not create cell "
-                f"{library_name}:{alias_cell_name}."
-            )
-        alias_cell = library.cell(alias_cell_name)
-        if not alias_cell.view_exists(alias_view_name):
-            raise RuntimeError(
-                f"ADS save_design_as() did not create {alias_design!r}."
-            )
-        alias_view = alias_cell.view(alias_view_name)
-        if not alias_view.is_layout_view:
-            raise RuntimeError(
-                f"Cache-bypass view is not a layout view: {alias_design!r}."
-            )
-
-        if "artwork.ael" in alias_view.file_names:
-            alias_view.delete_file("artwork.ael")
-        alias_view.copy_file(source_artwork, "artwork.ael")
-        alias_artwork = alias_view.path / "artwork.ael"
-        if not alias_artwork.is_file():
-            raise RuntimeError(
-                f"ADS did not copy generated artwork to {alias_artwork}."
-            )
-
-        alias_compiled = alias_artwork.with_suffix(".atf")
-        if alias_compiled.is_file():
-            alias_view.delete_file("artwork.atf")
-        ael.call.load(str(alias_artwork.with_suffix("")), library_name)
-        if not alias_compiled.is_file():
-            raise RuntimeError(
-                f"ADS did not compile cache-bypass artwork: {alias_compiled}."
-            )
-
-        alias_parameter_names, alias_ael_function = (
-            _read_source_pcell_metadata(alias_design)
-        )
-        if (
-            alias_parameter_names != expected_parameter_names
-            or alias_ael_function != expected_ael_function
-        ):
-            raise RuntimeError(
-                "The cache-bypass source view did not preserve the original "
-                "PCell schema or AEL generator."
-            )
-    except Exception as error:
-        if library.cell_exists(alias_cell_name):
-            try:
-                library.delete_cell(alias_cell_name)
-            except Exception as cleanup_error:
-                raise RuntimeError(
-                    f"Cache-bypass source creation failed, and ADS could not "
-                    f"remove partial cell {library_name}:{alias_cell_name}."
-                ) from cleanup_error
-        raise RuntimeError(
-            "Could not create a verified fresh source-cell identity. The "
-            "existing RFPro view was not changed."
-        ) from error
-
-    print("Fresh source-cell identity created and verified:")
-    print(f"  {alias_design}")
-    print(f"  Parameters: {', '.join(expected_parameter_names)}")
-
-
 def _confirm_schema_rebuild(
     rfpro_design: str,
     source_design: str,
@@ -1308,7 +1293,6 @@ def _confirm_schema_rebuild(
     parameter_names: list[str],
     ael_function: str,
     generated_ael_files: list[Path],
-    source_alias_lcv: tuple[str, str, str] | None,
     assume_yes: bool,
 ) -> None:
     print("Schema rebuild requested.")
@@ -1326,24 +1310,14 @@ def _confirm_schema_rebuild(
     print("  Generated AEL files to recompile and reload:")
     for generated_file in generated_ael_files:
         print(f"    {generated_file}")
-    if source_alias_lcv is not None:
-        print(
-            "  Source action: preserve and rebuild generated .atf files, then "
-            "create a new source cell; the original cell remains unchanged"
-        )
-        print(
-            "  PCell-cache bypass: create versioned source cell/layout "
-            f"{':'.join(source_alias_lcv)}"
-        )
-        print(
-            "  The rebuilt RFPro view will reference that cell alias; the "
-            "original source cell and layout remain unchanged."
-        )
-    else:
-        print(
-            "  Source action: preserve and rebuild generated .atf files; the "
-            "layout database will not be modified"
-        )
+    print(
+        "  Source action: preserve and rebuild generated .atf files; the "
+        "layout database and source LCV will not be modified"
+    )
+    print(
+        "  RFPro source reference after rebuild: "
+        f"{source_design} (unchanged)"
+    )
     print("  RFPro analyses, sweeps, and local view settings may need recreation.")
 
     if assume_yes:
@@ -1368,7 +1342,6 @@ def _write_backup_manifest(
     parameter_names: list[str],
     ael_function: str,
     generated_ael_files: list[Path],
-    source_alias_lcv: tuple[str, str, str] | None,
 ) -> None:
     manifest = {
         "created": datetime.now().astimezone().isoformat(),
@@ -1385,11 +1358,6 @@ def _write_backup_manifest(
         "source_parameters": parameter_names,
         "source_ael_function": ael_function,
         "source_ael_files": [str(path) for path in generated_ael_files],
-        "cache_bypass_source_design": (
-            ":".join(source_alias_lcv)
-            if source_alias_lcv is not None
-            else None
-        ),
     }
     manifest_path = backup_path / "rfpro-recovery-manifest.json"
     manifest_path.write_text(
@@ -1405,7 +1373,6 @@ def _rebuild_rfpro_schema(
     emsetup_design: str | None,
     explicit_substrate: str | None,
     backup_root: Path | None,
-    bypass_pcell_cache: bool,
     assume_yes: bool,
 ) -> None:
     library_name, cell_name, view_name = rfpro_lcv
@@ -1442,11 +1409,6 @@ def _rebuild_rfpro_schema(
         explicit_substrate,
     )
     generated_ael_files = _find_generated_source_ael(source_design)
-    source_alias_lcv = (
-        _planned_source_alias_lcv(source_lcv)
-        if bypass_pcell_cache
-        else None
-    )
     backup_path = _planned_backup_path(rfpro_lcv, backup_root)
     _confirm_schema_rebuild(
         rfpro_design,
@@ -1459,7 +1421,6 @@ def _rebuild_rfpro_schema(
         parameter_names,
         ael_function,
         generated_ael_files,
-        source_alias_lcv,
         assume_yes,
     )
 
@@ -1479,7 +1440,6 @@ def _rebuild_rfpro_schema(
         parameter_names,
         ael_function,
         generated_ael_files,
-        source_alias_lcv,
     )
     print(f"Existing RFPro view preserved at: {backup_path}")
 
@@ -1503,17 +1463,6 @@ def _rebuild_rfpro_schema(
         )
     print("Generated AEL reload preserved the source PCell parameter schema.")
 
-    effective_source_lcv = source_lcv
-    if source_alias_lcv is not None:
-        _create_source_alias_cell(
-            source_design,
-            source_alias_lcv,
-            generated_ael_files,
-            parameter_names,
-            ael_function,
-        )
-        effective_source_lcv = source_alias_lcv
-
     cell.delete_view(view_name)
     if cell.view_exists(view_name):
         raise RuntimeError(
@@ -1524,14 +1473,14 @@ def _rebuild_rfpro_schema(
         emtools.create_empro_view(
             rfpro_lcv,
             "rfpro",
-            effective_source_lcv,
+            source_lcv,
             substrate_ls,
         )
         emtools.update_empro_view(rfpro_lcv)
         _prepare_rfpro_view_for_open(rfpro_lcv)
-        _verify_rebuilt_rfpro_reference(
+        _verify_rfpro_reference(
             rfpro_lcv,
-            effective_source_lcv,
+            source_lcv,
             substrate_ls,
         )
     except Exception as error:
@@ -1546,26 +1495,16 @@ def _rebuild_rfpro_schema(
             f"Preserved view: {backup_path}"
         )
 
-    print("Schema rebuild, auxiliary refresh, and open preparation completed.")
-    if source_alias_lcv is not None:
-        print(
-            "The generated source AEL was recompiled and reloaded; the "
-            "original source cell and layout were not modified."
-        )
-        print(
-            "RFPro now references fresh source identity: "
-            f"{':'.join(source_alias_lcv)}"
-        )
-    else:
-        print(
-            "The generated source AEL was recompiled and reloaded; the source "
-            "layout database was not modified."
-        )
+    print("ADS-side rebuild and open preparation completed.")
+    print(
+        "The generated source AEL was recompiled and reloaded; the source "
+        "layout database and LCV were not modified."
+    )
     print(f"Previous RFPro view backup: {backup_path}")
     print(
-        "The ADS-side source and setup checks passed. Open RFPro and verify "
-        "Design Parameters; the RFPro UI parameter tree is not exposed by "
-        "the public ADS emtools API."
+        "The ADS-side source/reference checks passed; this does not prove that "
+        "RFPro populated its Design Parameters tree. Open RFPro and verify it. "
+        "That UI tree is not exposed by the public ADS emtools API."
     )
 
 
@@ -1575,9 +1514,13 @@ def main(argv: list[str] | None = None) -> None:
     rfpro_lcv = (library, cell, view)
     _print_qt_runtime()
 
-    if arguments.rebuild_schema and not de.is_pde_app():
+    requires_live_ads = (
+        arguments.rebuild_schema or arguments.recompile_source_ael
+    )
+    if requires_live_ads and not de.is_pde_app():
         raise RuntimeError(
-            "--rebuild-schema must run inside the live ADS application. This "
+            "--recompile-source-ael and --rebuild-schema must run inside the "
+            "live ADS application. This "
             "workspace loads application-only AEL functions such as "
             "api_create_palette_item and "
             "db_add_design_opened_in_window_callback; they are intentionally "
@@ -1585,17 +1528,24 @@ def main(argv: list[str] | None = None) -> None:
             "was opened. Run main([...]) from the ADS Python Console and omit "
             "--workspace."
         )
-    if arguments.rebuild_schema and arguments.workspace is not None:
+    if requires_live_ads and arguments.workspace is not None:
         raise RuntimeError(
-            "Do not pass --workspace with --rebuild-schema inside ADS. Open "
-            "the owning workspace in ADS first, then run main([...]) against "
-            "that live session."
+            "Do not pass --workspace with --recompile-source-ael or "
+            "--rebuild-schema inside ADS. Open the owning workspace in ADS "
+            "first, then run main([...]) against that live session."
         )
 
     workspace = _open_workspace_if_requested(arguments.workspace)
     _require_open_library(library, arguments.design)
 
-    if arguments.rebuild_schema:
+    if arguments.recompile_source_ael:
+        assert arguments.source_design is not None
+        _recompile_source_ael_and_refresh(
+            rfpro_lcv,
+            arguments.design,
+            arguments.source_design,
+        )
+    elif arguments.rebuild_schema:
         assert arguments.source_design is not None
         _rebuild_rfpro_schema(
             rfpro_lcv,
@@ -1604,7 +1554,6 @@ def main(argv: list[str] | None = None) -> None:
             arguments.em_setup_design,
             arguments.substrate,
             arguments.backup_dir,
-            arguments.bypass_pcell_cache,
             arguments.yes,
         )
     else:
@@ -1612,8 +1561,9 @@ def main(argv: list[str] | None = None) -> None:
         emtools.update_empro_view(rfpro_lcv)
         print("Refresh completed. Open RFPro and inspect Design Parameters.")
         print(
-            "If parameter names, types, order, or count changed, use "
-            "--rebuild-schema instead of repeating this update."
+            "If generated vertex/perturb-point AEL changed but the schema did "
+            "not, use --recompile-source-ael. If parameter names, types, "
+            "order, or count changed, use --rebuild-schema."
         )
 
     # Keep a standalone-opened workspace alive until the refresh has finished.
