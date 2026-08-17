@@ -11,12 +11,16 @@ if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from rfpro_pcell_recovery.runtime import (  # noqa: E402
+    force_active_rfpro_geometry_update,
+    get_active_project_parameter_formulas,
     get_loaded_design_parameters,
     main,
     refresh_active_rfpro_layout,
 )
 
 __all__ = [
+    "force_active_rfpro_geometry_update",
+    "get_active_project_parameter_formulas",
     "get_loaded_design_parameters",
     "refresh_active_rfpro_layout",
 ]

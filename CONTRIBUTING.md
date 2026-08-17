@@ -64,23 +64,30 @@ The cache inspector must remain read-only. Validate exact/component matching,
 large-file skip reporting, and the changed-during-scan warning with disposable
 fixtures; never validate deletion against a working ADS cache.
 
-With the affected view active, validate the importable runtime helper from the
+With the affected view active, validate both importable runtime paths from the
 RFPro/EMPro Python Console:
 
 ```python
 import sys
 
 sys.path.insert(0, r"C:\path\to\ads-rfpro-pcell-recovery")
-from rfpro_pcell_recovery import refresh_active_rfpro_layout
+from rfpro_pcell_recovery import (
+    force_active_rfpro_geometry_update,
+    refresh_active_rfpro_layout,
+)
 
 print(refresh_active_rfpro_layout())
+print(force_active_rfpro_geometry_update(parameter_names=("p1", "p2")))
 ```
 
-Confirm that it returns after RFPro repopulates the active layout's parameter
-collection. Also confirm that an unavailable project, unavailable layout, or
-empty result at timeout raises a descriptive exception. This is not a geometry
-cache-eviction test: restored parameter names and old artwork behavior are
-distinct outcomes.
+Confirm that metadata refresh returns formulas from the active-project
+`ParameterList`, even if `layout._designParameters()` is empty. Confirm that
+the geometry update passes exactly the selected names and current formulas to
+`_updateDesignParameters()` without subsequently calling `layout.refresh()`.
+Record the native status and inspect the geometry. Also confirm that an
+unavailable project, layout, design-spec loader, updater, selected name, or
+empty active-project parameter list raises a descriptive exception. Never run
+this validation against a view whose current results cannot be made stale.
 
 If an in-place source synchronization does not populate the existing RFPro
 view, validate the backed-up RFPro recreation fallback from the live ADS Python

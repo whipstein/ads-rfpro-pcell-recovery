@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## 1.23.0 - 2026-08-16
+
+- Add `force_active_rfpro_geometry_update()` for applying a selected
+  `{parameter: formula}` mapping to only the active RFPro layout through the
+  live ADS 2026 Update 2.1 `_updateDesignParameters()` binding.
+- Build updates from the documented `activeProject.parameters.names()` and
+  `.formula(name)` APIs, with optional explicit names or formulas so unrelated
+  global project parameters need not be included.
+- Avoid `layout.refresh()` on the geometry-update path and preserve the native
+  status string plus before/after private maps for live diagnosis.
+- Correct metadata refresh validation to use the active-project
+  `ParameterList`; `_designParameters()` can be empty while RFPro's visible
+  Design Parameters tree is populated.
+- Keep the operation scoped to the active project: it does not clear the
+  workspace `.adsPcells` cache, replace the project, or touch another RFPro
+  view.
+
+## 1.22.2 - 2026-08-16
+
+- Correct the RFPro runtime sequence by calling the active project's
+  `_loadOaParametersFromDesignSpec()` stage immediately after `layout.refresh()`.
+  Keysight's shipped ADS 2026 Update 2.1 `loadDesign()` workflow makes the same
+  call after loading the RFPro layout.
+- Stop relying on GUI event processing alone to repopulate the design-parameter
+  table; event processing now completes the reload after the design-spec
+  parameters have explicitly been requested.
+
 ## 1.22.1 - 2026-08-16
 
 - Move the importable RFPro helper behind the unique

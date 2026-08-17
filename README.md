@@ -1,6 +1,6 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.22.1**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.23.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses, recompiles, and refreshes RFPro parameters created with
@@ -365,9 +365,10 @@ artwork and can confirm this diagnosis, but it is not a cache purge. Do not use
 that as the basis for a sweep because previously cached values may still use
 the old geometry.
 
-After the ADS-side update has completed, open only the affected RFPro view. To
-refresh its active in-memory layout without clearing or replacing the project,
-run this from the **RFPro/EMPro Python Console**:
+After the ADS-side update has completed, open only the affected RFPro view. If
+the parameter names are present but the geometry still follows the old
+`EM > Component > Parameters...` vertex/element mapping, run this from the
+**RFPro/EMPro Python Console**:
 
 ```python
 import sys
@@ -377,24 +378,51 @@ sys.path.insert(
     r"C:\absolute\path\to\ads-rfpro-pcell-recovery",
 )
 
-from rfpro_pcell_recovery import refresh_active_rfpro_layout
+from rfpro_pcell_recovery import force_active_rfpro_geometry_update
 
-parameters = refresh_active_rfpro_layout(timeout_seconds=5.0)
-print(parameters)
+report = force_active_rfpro_geometry_update(
+    parameter_names=("p1", "p2"),
+)
+print(report)
 ```
 
-On Linux, use the corresponding absolute repository path. The importable
-helper calls the active layout wrapper's `refresh()`, pumps RFPro's GUI event
-loop, and waits for its design-parameter collection to become non-empty. This
-is necessary because `refresh()` can temporarily clear that collection and
-return before RFPro has processed the queued reload. It affects the active
-RFPro layout only; it does not reset `.adsPcells` or replace the project.
+Replace `p1` and `p2` with every parameter listed for the top-level PCell. On
+Linux, use the corresponding absolute repository path. The helper invokes the
+design-spec loader used by Keysight's shipped `loadDesign()` workflow, reads
+the selected formulas through the documented active-project `ParameterList`,
+and passes the resulting `{name: formula}` mapping to the active layout's
+native `_updateDesignParameters()` binding. The live ADS 2026 Update 2.1
+signature for that binding is `Mapping[str, str] -> str`.
 
-The helper confirms only that RFPro reloaded the parameter metadata. If the
-parameter names return but changing their values still moves the vertices or
-elements according to the **old** `EM > Component > Parameters...` mapping,
-RFPro is still evaluating cached PCell artwork. Do not treat the successful
-runtime refresh as proof that the new geometry generator is active.
+This geometry-update path intentionally does **not** call `layout.refresh()`
+afterward: that call can leave `layout._designParameters()` empty even though
+the UI parameter list is populated. It also does not reset `.adsPcells`, open
+or replace a project, or touch another RFPro view. The native return string and
+the before/after private maps are included in the report for diagnosis; an
+empty private map is not used as a proxy for the visible Design Parameters
+tree.
+
+If the active project contains only the top-level PCell parameters, omitting
+`parameter_names` passes all of them. Supplying the names explicitly is safer
+when the project also has unrelated global parameters. Explicit expressions
+are also supported:
+
+```python
+report = force_active_rfpro_geometry_update(
+    updates={"p1": "1.2 mm", "p2": "0.35 mm"},
+)
+```
+
+Changing the active layout's geometry can make that layout's existing results
+stale; no script can preserve their validity after the structure changes. This
+targeted call avoids the workspace-wide cache reset that caused unrelated
+RFPro views to lose their simulated-state tracking. Verify the displayed
+geometry before launching a new simulation.
+
+For metadata-only troubleshooting, `refresh_active_rfpro_layout()` remains
+available. It now validates the documented active-project `ParameterList`
+rather than waiting on the private layout map, which may legitimately remain
+empty.
 
 Do not pass `--workspace` for this operation because it requires the live ADS
 application. If the persisted source schema is correct but RFPro still shows a

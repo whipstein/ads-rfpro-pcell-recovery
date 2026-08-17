@@ -36,6 +36,9 @@ jobs:
       - name: Check release version consistency
         run: python scripts/check_release_version.py
 
+      - name: Test importable RFPro runtime helper
+        run: python -m unittest discover -s tests -v
+
       - name: Check shell syntax
         run: bash -n scripts/reset_adspcells_cache.sh
 
