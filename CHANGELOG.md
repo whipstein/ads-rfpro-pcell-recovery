@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## 1.21.0 - 2026-08-16
+
+- Integrate ADS' documented
+  `de_update_pcell_parameters(layoutContext, &report)` operation through a
+  self-contained AEL wrapper, allowing the Python script to receive the AEL
+  output report without requiring a separate environment or helper file.
+- Make `--recompile-source-ael` synchronize only the specified source PCell
+  supermaster and refresh the existing RFPro view in place, including when
+  parameters were added, removed, renamed, reordered, or changed in type.
+- Use `db_find_design_context_from_name(..., APPEND_DSN_MODE)` instead of the
+  deprecated `de_find_design_context_from_name()` form, probing the source
+  library and then the live `CmdOp` vocabulary for the required functions.
+- Back up the complete source layout and generated AEL before synchronization,
+  save the source only when ADS reports an update, revert on failure, verify the
+  persisted schema, and record the AEL reports in a JSON manifest.
+- Keep `--rebuild-schema` as an explicit RFPro-replacement fallback and apply
+  the same targeted source synchronization before recreation.
+- Preserve the warning that neither this metadata update nor AEL recompilation
+  evicts same-parameter-value geometry from workspace-wide `.adsPcells`.
+
+## 1.20.0 - 2026-08-16
+
+- Correct `--recompile-source-ael` completion reporting: successful AEL
+  compilation and `update_empro_view()` do not prove that an existing
+  same-parameter-value PCell geometry variant was evicted.
+- Report the exact workspace `.adsPcells` path when it remains present and warn
+  against simulating stale geometry.
+- Document that ADS 2026 Update 2.1 exposes no supported target-only cache
+  eviction; Keysight's published remedy for changed artwork at the same
+  parameter values remains a workspace-wide cache reset with ADS fully closed.
+- Add `inspect_adspcells_cache.py`, a read-only path/content inventory that
+  locates exact source/RFPro LCV matches, reports component-only candidates and
+  files changing during the scan, and never deletes cache data.
+- Stop recommending a workspace-wide reset when `.adsPcells` carries unrelated
+  RFPro structure state; require inspection before considering any scoped,
+  implementation-dependent recovery.
+
 ## 1.19.0 - 2026-08-16
 
 - Add `--recompile-source-ael` for vertex and perturb-point edits that change

@@ -24,8 +24,13 @@ jobs:
           python -m py_compile \
             de_generated_scripts/diagnose_pcell_parameters.py \
             de_generated_scripts/refresh_rfpro_view.py \
+            scripts/check_release_version.py \
+            scripts/inspect_adspcells_cache.py \
             scripts/diagnose_qt.py \
             scripts/test_qt_startup.py
+
+      - name: Check release version consistency
+        run: python scripts/check_release_version.py
 
       - name: Check shell syntax
         run: bash -n scripts/reset_adspcells_cache.sh

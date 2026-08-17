@@ -10,6 +10,8 @@
         "py_compile",
         "de_generated_scripts/diagnose_pcell_parameters.py",
         "de_generated_scripts/refresh_rfpro_view.py",
+        "scripts/check_release_version.py",
+        "scripts/inspect_adspcells_cache.py",
         "scripts/diagnose_qt.py",
         "scripts/test_qt_startup.py"
       ],
@@ -19,6 +21,18 @@
       "problemMatcher": [
         "$python"
       ]
+    },
+    {
+      "label": "Static check: release version",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "scripts/check_release_version.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     },
     {
       "label": "Static check: shell",
@@ -38,6 +52,7 @@
       "dependsOrder": "sequence",
       "dependsOn": [
         "Static check: Python",
+        "Static check: release version",
         "Static check: shell"
       ],
       "problemMatcher": []

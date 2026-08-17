@@ -52,7 +52,6 @@ while (Test-Path -LiteralPath $backupPath) {
 Move-Item -LiteralPath $cachePath -Destination $backupPath
 Write-Host "Cache preserved as:"
 Write-Host "  $backupPath"
-Write-Host "For a standalone VS Code run, leave ADS closed and pass --workspace."
-Write-Host "For value-only changes, run de_generated_scripts/refresh_rfpro_view.py normally."
-Write-Host "For renamed/added/removed/type-changed parameters, use --rebuild-schema."
-Write-Host "Open ADS only after the standalone refresh or rebuild completes."
+Write-Host "The workspace-wide PCell geometry cache is now reset."
+Write-Host "Restart ADS, open this workspace, and reopen the RFPro view."
+Write-Host "For renamed/added/removed/type-changed parameters, run --rebuild-schema inside ADS."

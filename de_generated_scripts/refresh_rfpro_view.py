@@ -18,11 +18,34 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 
 _ADS_NATIVE_REEXEC_MARKER = "_RFPRO_EMVIEWS_LOADER_REEXEC"
+
+_AEL_PCELL_UPDATE_FUNCTION = "rfpro_recovery_update_one_pcell"
+_AEL_PCELL_UPDATE_SOURCE = rf"""
+defun {_AEL_PCELL_UPDATE_FUNCTION}(designName)
+{{
+    decl layoutContext = db_find_design_context_from_name(
+        designName, APPEND_DSN_MODE);
+    if (layoutContext == NULL)
+        return list(FALSE, FALSE, FALSE, "", "Design context not found");
+
+    decl checkReport = "";
+    decl needsUpdate = de_check_pcell_parameters(
+        layoutContext, &checkReport);
+    if (!needsUpdate)
+        return list(TRUE, FALSE, FALSE, checkReport, "");
+
+    decl updateReport = "";
+    decl updated = de_update_pcell_parameters(
+        layoutContext, &updateReport);
+    return list(TRUE, TRUE, updated, checkReport, updateReport);
+}}
+"""
 
 
 def _is_ads_root(path: Path) -> bool:
@@ -516,7 +539,8 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Refresh an existing ADS RFPro view, force-recompile its original "
-            "source AEL, or rebuild it after a PCell parameter-schema change."
+            "source AEL and synchronize one PCell, or recreate the RFPro view "
+            "as an explicit fallback."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -550,8 +574,8 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--rebuild-schema",
         action="store_true",
         help=(
-            "back up, delete, and recreate the RFPro view after parameters "
-            "were added, removed, renamed, reordered, or changed in type"
+            "fallback that backs up, deletes, and recreates the selected "
+            "RFPro view when it cannot consume the synchronized source schema"
         ),
     )
     parser.add_argument(
@@ -559,9 +583,11 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "force-recompile and reload the original source cell's generated "
-            "itemdef.ael and artwork.ael, then refresh this RFPro view without "
-            "replacing it; use for vertex or perturb-point code changes that "
-            "do not alter the parameter schema"
+            "itemdef.ael and artwork.ael, synchronize that one PCell "
+            "supermaster with de_update_pcell_parameters(), then refresh this "
+            "RFPro view without replacing it; this supports parameter-schema "
+            "changes but cannot evict same-value geometry already stored in "
+            "the workspace-wide .adsPcells cache"
         ),
     )
     parser.add_argument(
@@ -601,8 +627,8 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--backup-dir",
         type=Path,
         help=(
-            "schema-rebuild backup root; defaults to "
-            "WORKSPACE/.rfpro-pcell-recovery/view-backups"
+            "source-update or schema-rebuild backup root; defaults to "
+            "WORKSPACE/.rfpro-pcell-recovery"
         ),
     )
     parser.add_argument(
@@ -631,8 +657,15 @@ def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "--source-design is only valid with --recompile-source-ael or "
             "--rebuild-schema"
         )
-    if arguments.backup_dir is not None and not arguments.rebuild_schema:
-        parser.error("--backup-dir is only valid with --rebuild-schema")
+    if (
+        arguments.backup_dir is not None
+        and not arguments.rebuild_schema
+        and not arguments.recompile_source_ael
+    ):
+        parser.error(
+            "--backup-dir is only valid with --recompile-source-ael or "
+            "--rebuild-schema"
+        )
     if arguments.yes and not arguments.rebuild_schema:
         parser.error("--yes is only valid with --rebuild-schema")
     if arguments.em_setup_design is not None and not arguments.rebuild_schema:
@@ -943,6 +976,145 @@ def _reload_generated_source_ael(
                 staged.unlink()
 
 
+def _ael_report(value: object) -> str:
+    report = str(value).strip()
+    return report if report else "(no report text)"
+
+
+def _call_targeted_pcell_parameter_update(
+    source_design: str,
+) -> tuple[bool, bool, str, str]:
+    """Call ADS' documented single-layout PCell parameter updater."""
+
+    library_name = source_design.split(":", 1)[0]
+    required_functions = (
+        "db_find_design_context_from_name",
+        "de_check_pcell_parameters",
+        "de_update_pcell_parameters",
+    )
+    bridge = None
+    probe_results: list[str] = []
+    for vocabulary in (library_name, "CmdOp"):
+        candidate = ael.call(vocab=vocabulary)
+        try:
+            missing = [
+                name
+                for name in required_functions
+                if not bool(candidate.is_function_defined(name))
+            ]
+        except Exception as error:
+            probe_results.append(f"{vocabulary}: probe failed ({error})")
+            continue
+        if not missing:
+            bridge = candidate
+            wrapper_vocabulary = vocabulary
+            break
+        probe_results.append(f"{vocabulary}: missing {', '.join(missing)}")
+
+    if bridge is None:
+        raise RuntimeError(
+            "ADS did not load the documented targeted PCell AEL functions in "
+            "either the source-library or CmdOp vocabulary. "
+            + "; ".join(probe_results)
+        )
+    print(f"Targeted PCell AEL wrapper vocabulary: {wrapper_vocabulary}")
+
+    with tempfile.TemporaryDirectory(
+        prefix="rfpro-pcell-parameter-update-"
+    ) as temporary_directory:
+        helper = Path(temporary_directory) / "rfpro_pcell_parameter_update.ael"
+        helper.write_text(_AEL_PCELL_UPDATE_SOURCE, encoding="utf-8")
+        ael.call.load(str(helper.with_suffix("")), wrapper_vocabulary)
+        if not bool(
+            bridge.is_function_defined(_AEL_PCELL_UPDATE_FUNCTION)
+        ):
+            raise RuntimeError(
+                "ADS compiled the targeted PCell AEL wrapper but did not "
+                "define its callable function."
+            )
+        result = getattr(bridge, _AEL_PCELL_UPDATE_FUNCTION)(source_design)
+
+    if not isinstance(result, (list, tuple)) or len(result) != 5:
+        raise RuntimeError(
+            "ADS returned an unexpected result from "
+            f"de_update_pcell_parameters(): {result!r}."
+        )
+
+    context_found = bool(result[0])
+    needs_update = bool(result[1])
+    updated = bool(result[2])
+    check_report = _ael_report(result[3])
+    update_report = _ael_report(result[4])
+    if not context_found:
+        raise RuntimeError(
+            f"ADS could not open an editable layout context for "
+            f"{source_design!r}: {update_report}."
+        )
+    return needs_update, updated, check_report, update_report
+
+
+def _synchronize_source_pcell_parameters(
+    source_design: str,
+    expected_ael_function: str,
+) -> tuple[list[str], bool, str, str]:
+    """Update and save one PCell supermaster from its item definition."""
+
+    design = db.open_design(source_design, de.db.DesignMode.APPEND)
+    try:
+        if not design.is_supermaster:
+            raise RuntimeError(
+                f"Source layout {source_design!r} is not a PCell supermaster."
+            )
+
+        needs_update, updated, check_report, update_report = (
+            _call_targeted_pcell_parameter_update(source_design)
+        )
+        parameter_names = _pcell_parameter_names(design)
+        ael_function = db.PCellInfo(design=design).ael_function.strip()
+
+        if needs_update and not updated:
+            raise RuntimeError(
+                "ADS reported out-of-date PCell parameters but "
+                "de_update_pcell_parameters() did not update them. "
+                f"Check report: {check_report}. Update report: "
+                f"{update_report}."
+            )
+        if not parameter_names:
+            raise RuntimeError(
+                "The targeted PCell update left the source supermaster with "
+                "no parameters. The source design was reverted and RFPro "
+                "was not changed."
+            )
+        if ael_function != expected_ael_function:
+            raise RuntimeError(
+                "The targeted PCell update unexpectedly changed the source "
+                f"AEL generator from {expected_ael_function!r} to "
+                f"{ael_function!r}. The source design was reverted and "
+                "RFPro was not changed."
+            )
+
+        if updated:
+            design.save_design()
+    except Exception:
+        try:
+            design.revert_design()
+        except Exception:
+            pass
+        raise
+    finally:
+        design.close_design()
+
+    persisted_names, persisted_function = _read_source_pcell_metadata(
+        source_design
+    )
+    if persisted_names != parameter_names or persisted_function != ael_function:
+        raise RuntimeError(
+            "ADS did not persist the targeted source PCell parameter update. "
+            "RFPro was not changed."
+        )
+    return persisted_names, updated, check_report, update_report
+
+
 def _design_ref_tuple(
     design_ref: object,
     attribute_name: str,
@@ -1076,8 +1248,9 @@ def _recompile_source_ael_and_refresh(
     rfpro_lcv: tuple[str, str, str],
     rfpro_design: str,
     source_design: str,
+    backup_root: Path | None,
 ) -> None:
-    """Reload generated source AEL and refresh one same-LCV RFPro view."""
+    """Synchronize one source PCell and refresh one same-LCV RFPro view."""
 
     source_parts = source_design.split(":")
     if len(source_parts) != 3:
@@ -1110,36 +1283,90 @@ def _recompile_source_ael_and_refresh(
     for generated_file in generated_ael_files:
         print(f"    {generated_file}")
 
+    backup_path = _planned_source_update_backup_path(
+        source_lcv,
+        backup_root,
+    )
+    backup_path.mkdir(parents=True)
+    _backup_source_layout_view(source_design, backup_path)
+    _backup_generated_source_ael(generated_ael_files, backup_path)
+    print(f"Source layout and generated AEL backup: {backup_path}")
+
     _reload_generated_source_ael(
         source_design,
         generated_ael_files,
         ael_function,
     )
-    reloaded_parameter_names, reloaded_ael_function = (
-        _read_source_pcell_metadata(source_design)
+    (
+        synchronized_parameter_names,
+        source_was_updated,
+        check_report,
+        update_report,
+    ) = _synchronize_source_pcell_parameters(
+        source_design,
+        ael_function,
     )
-    if (
-        reloaded_parameter_names != parameter_names
-        or reloaded_ael_function != ael_function
-    ):
-        raise RuntimeError(
-            "The generated AEL compiled, but its PCell parameter schema or "
-            "generator changed. RFPro was not refreshed because this mode is "
-            "only for vertex/perturb-point code changes with an unchanged "
-            "schema. Run --rebuild-schema against the same original source "
-            "LCV instead."
-        )
+    _write_source_update_manifest(
+        backup_path,
+        rfpro_design,
+        source_design,
+        parameter_names,
+        synchronized_parameter_names,
+        source_was_updated,
+        check_report,
+        update_report,
+        generated_ael_files,
+    )
+    print(
+        "Targeted de_update_pcell_parameters() check report: "
+        f"{check_report}"
+    )
+    print(
+        "Targeted de_update_pcell_parameters() update report: "
+        f"{update_report}"
+    )
+    print(f"Source PCell database updated: {source_was_updated}")
+    print(
+        "Stored source parameters after synchronization "
+        f"({len(synchronized_parameter_names)}): "
+        + ", ".join(synchronized_parameter_names)
+    )
 
     emtools.update_empro_view(rfpro_lcv)
     _prepare_rfpro_view_for_open(rfpro_lcv)
     _verify_rfpro_reference(rfpro_lcv, source_lcv, substrate_ls)
 
-    print("Targeted AEL recompile and RFPro auxiliary refresh completed.")
+    print("Targeted source-PCell and RFPro auxiliary update completed.")
     print("The RFPro view and original source layout LCV were not replaced.")
-    print(
-        "Open RFPro and verify the updated perturb-point/vertex behavior "
-        "before launching a new simulation."
-    )
+    workspace_cache = de.active_workspace().path / ".adsPcells"
+    if workspace_cache.is_dir():
+        print("WARNING: the workspace PCell geometry cache still exists:")
+        print(f"  {workspace_cache}")
+        print(
+            "ADS can reuse old geometry when AEL artwork changes but the "
+            "PCell parameter values are unchanged. The public ADS 2026 U2.1 "
+            "API exposes no target-only eviction for that cached variant."
+        )
+        print(
+            "Do not trust or simulate the displayed geometry. A workspace-wide "
+            "reset is intentionally not performed because it can invalidate "
+            "unrelated RFPro structure state."
+        )
+        inspector = (
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "inspect_adspcells_cache.py"
+        )
+        print("Run the read-only cache inventory and provide its full output:")
+        print(f'  "{sys.executable}" "{inspector}"')
+        print(f'    --workspace "{de.active_workspace().path}"')
+        print(f'    --source-design "{source_design}"')
+        print(f'    --rfpro-design "{rfpro_design}"')
+    else:
+        print(
+            "No workspace .adsPcells directory is present. Reopen RFPro and "
+            "verify that it generates the updated geometry."
+        )
 
 
 def _discover_rebuild_inputs(
@@ -1260,6 +1487,76 @@ def _safe_path_component(value: str) -> str:
     return safe_value or "unnamed"
 
 
+def _source_layout_view_path(source_design: str) -> Path:
+    library_name, cell_name, view_name = source_design.split(":")
+    library = _require_open_library(library_name, source_design)
+    cell = library.cell(cell_name)
+    return Path(cell.view(view_name).path).resolve()
+
+
+def _backup_source_layout_view(
+    source_design: str,
+    backup_path: Path,
+) -> None:
+    source_path = _source_layout_view_path(source_design)
+    destination = backup_path / "source-layout-view"
+    shutil.copytree(source_path, destination)
+
+
+def _planned_source_update_backup_path(
+    source_lcv: tuple[str, str, str],
+    backup_root: Path | None,
+) -> Path:
+    if backup_root is None:
+        root = (
+            de.active_workspace().path
+            / ".rfpro-pcell-recovery"
+            / "source-updates"
+        )
+    else:
+        root = backup_root.expanduser().resolve() / "source-updates"
+
+    library, cell, view = source_lcv
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    return (
+        root
+        / _safe_path_component(library)
+        / _safe_path_component(cell)
+        / f"{_safe_path_component(view)}-{timestamp}"
+    )
+
+
+def _write_source_update_manifest(
+    backup_path: Path,
+    rfpro_design: str,
+    source_design: str,
+    parameters_before: list[str],
+    parameters_after: list[str],
+    source_was_updated: bool,
+    check_report: str,
+    update_report: str,
+    generated_ael_files: list[Path],
+) -> None:
+    manifest = {
+        "created": datetime.now().astimezone().isoformat(),
+        "ads_product": de.product_version(),
+        "emtools": emtools.version(),
+        "rfpro_design": rfpro_design,
+        "source_design": source_design,
+        "source_parameters_before": parameters_before,
+        "source_parameters_after": parameters_after,
+        "source_was_updated": source_was_updated,
+        "pcell_check_report": check_report,
+        "pcell_update_report": update_report,
+        "source_ael_files": [str(path) for path in generated_ael_files],
+    }
+    manifest_path = backup_path / "source-update-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _planned_backup_path(
     rfpro_lcv: tuple[str, str, str], backup_root: Path | None
 ) -> Path:
@@ -1303,7 +1600,7 @@ def _confirm_schema_rebuild(
     print(f"  EM Setup: {emsetup_design or 'not used'}")
     print(f"  Substrate: {substrate_ls[0]}:{substrate_ls[1]}")
     print(f"  Substrate source: {substrate_source}")
-    print(f"  New source parameters ({len(parameter_names)}):")
+    print(f"  Currently stored source parameters ({len(parameter_names)}):")
     for name in parameter_names:
         print(f"    {name}")
     print(f"  AEL PCell generator: {ael_function}")
@@ -1311,8 +1608,9 @@ def _confirm_schema_rebuild(
     for generated_file in generated_ael_files:
         print(f"    {generated_file}")
     print(
-        "  Source action: preserve and rebuild generated .atf files; the "
-        "layout database and source LCV will not be modified"
+        "  Source action: preserve the layout view and generated AEL, rebuild "
+        "the .atf files, then use de_update_pcell_parameters() to synchronize "
+        "and save only this source supermaster when it is out of date"
     )
     print(
         "  RFPro source reference after rebuild: "
@@ -1429,6 +1727,7 @@ def _rebuild_rfpro_schema(
     # refresh and can replace an EM Component parameter selection.
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(old_view_path, backup_path)
+    _backup_source_layout_view(source_design, backup_path)
     _backup_generated_source_ael(generated_ael_files, backup_path)
     _write_backup_manifest(
         backup_path,
@@ -1448,20 +1747,40 @@ def _rebuild_rfpro_schema(
         generated_ael_files,
         ael_function,
     )
-    reloaded_parameter_names, reloaded_ael_function = (
-        _read_source_pcell_metadata(source_design)
+    (
+        synchronized_parameter_names,
+        source_was_updated,
+        check_report,
+        update_report,
+    ) = _synchronize_source_pcell_parameters(
+        source_design,
+        ael_function,
     )
-    if (
-        reloaded_parameter_names != parameter_names
-        or reloaded_ael_function != ael_function
-    ):
-        raise RuntimeError(
-            "Generated AEL reloaded, but the source PCell metadata changed "
-            "unexpectedly. The RFPro view was not changed. Review the "
-            "before/after component definition and restore the generated AEL "
-            f"from {backup_path / 'source-ael'}."
-        )
-    print("Generated AEL reload preserved the source PCell parameter schema.")
+    _write_source_update_manifest(
+        backup_path,
+        rfpro_design,
+        source_design,
+        parameter_names,
+        synchronized_parameter_names,
+        source_was_updated,
+        check_report,
+        update_report,
+        generated_ael_files,
+    )
+    parameter_names = synchronized_parameter_names
+    print(
+        "Targeted de_update_pcell_parameters() check report: "
+        f"{check_report}"
+    )
+    print(
+        "Targeted de_update_pcell_parameters() update report: "
+        f"{update_report}"
+    )
+    print(f"Source PCell database updated: {source_was_updated}")
+    print(
+        "Stored source parameters after synchronization "
+        f"({len(parameter_names)}): " + ", ".join(parameter_names)
+    )
 
     cell.delete_view(view_name)
     if cell.view_exists(view_name):
@@ -1498,7 +1817,8 @@ def _rebuild_rfpro_schema(
     print("ADS-side rebuild and open preparation completed.")
     print(
         "The generated source AEL was recompiled and reloaded; the source "
-        "layout database and LCV were not modified."
+        "PCell parameter metadata was synchronized in place and its LCV was "
+        "not replaced."
     )
     print(f"Previous RFPro view backup: {backup_path}")
     print(
@@ -1544,6 +1864,7 @@ def main(argv: list[str] | None = None) -> None:
             rfpro_lcv,
             arguments.design,
             arguments.source_design,
+            arguments.backup_dir,
         )
     elif arguments.rebuild_schema:
         assert arguments.source_design is not None
@@ -1561,9 +1882,10 @@ def main(argv: list[str] | None = None) -> None:
         emtools.update_empro_view(rfpro_lcv)
         print("Refresh completed. Open RFPro and inspect Design Parameters.")
         print(
-            "If generated vertex/perturb-point AEL changed but the schema did "
-            "not, use --recompile-source-ael. If parameter names, types, "
-            "order, or count changed, use --rebuild-schema."
+            "If generated vertex/perturb-point AEL or the source parameter "
+            "schema changed, use --recompile-source-ael for the targeted "
+            "single-cell update. Use --rebuild-schema only if the in-place "
+            "RFPro update cannot consume the synchronized source schema."
         )
 
     # Keep a standalone-opened workspace alive until the refresh has finished.

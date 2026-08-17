@@ -28,10 +28,15 @@ python de_generated_scripts/refresh_rfpro_view.py \
   --lib "MY_LIB" --cell "MY_CELL" \
   --design "MY_RFPRO_VIEW" \
   --workspace "/path/to/workspace_wrk"
+
+python scripts/inspect_adspcells_cache.py \
+  --workspace "/path/to/workspace_wrk" \
+  --source-design "MY_LIB:MY_CELL:layout" \
+  --rfpro-design "MY_LIB:MY_CELL:MY_RFPRO_VIEW"
 ```
 
-For unchanged-schema vertex or perturb-point changes, validate the targeted AEL
-path from the live ADS Python Console:
+For generated-artwork or parameter-schema changes, validate the targeted
+single-cell path from the live ADS Python Console:
 
 ```python
 import runpy
@@ -46,12 +51,22 @@ runpy.run_path(
 ])
 ```
 
-Confirm that it rejects an RFPro view pointing at an alias LCV, recompiles both
-generated AEL files, preserves the parameter schema, and leaves the RFPro view
-itself in place.
+Confirm that it rejects an RFPro view pointing at an alias LCV, backs up the
+source layout and both generated AEL files, and leaves the RFPro view itself in
+place. Test both a no-op check and an intentionally changed parameter schema.
+For the changed schema, verify that it prints both AEL reports, saves only the
+specified source supermaster, reopens it read-only, and records the before/after
+names in `source-update-manifest.json`. Force a failed validation and confirm
+that the source is reverted before RFPro is updated. When `.adsPcells` exists,
+confirm that it reports the exact cache path and does not claim the same-value
+geometry was evicted.
+The cache inspector must remain read-only. Validate exact/component matching,
+large-file skip reporting, and the changed-during-scan warning with disposable
+fixtures; never validate deletion against a working ADS cache.
 
-When the parameter schema changes, validate the backed-up rebuild path from the
-live ADS Python Console with the owning workspace open:
+If an in-place source synchronization does not populate the existing RFPro
+view, validate the backed-up RFPro recreation fallback from the live ADS Python
+Console with the owning workspace open:
 
 ```python
 import runpy
@@ -71,8 +86,9 @@ rebuild. Other RFPro simulations may remain open. Runtime success cannot be
 established by syntax compilation alone because Qt and ADS native-library
 loading happen on the target machine. Confirm that the rebuild plan lists the
 expected source parameters and generated `itemdef.ael`/`artwork.ael` files.
-Confirm that ADS reports successful targeted AEL recompilation before it
-recreates RFPro, then inspect RFPro's Design Parameters tree.
+Confirm that ADS reports successful targeted AEL recompilation and single-cell
+`de_update_pcell_parameters()` synchronization before it recreates RFPro, then
+inspect RFPro's Design Parameters tree.
 Confirm that the rebuilt RFPro `DesignRef` still points to the exact original
 source `LIBRARY:CELL:VIEW`. Do not add a source alias as a cache workaround;
 that loses the component context needed to render the layout.
