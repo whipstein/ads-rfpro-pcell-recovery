@@ -1,12 +1,13 @@
 # ADS RFPro PCell Recovery
 
-Current release: **1.21.0**. See [CHANGELOG.md](CHANGELOG.md) for release
+Current release: **1.22.1**. See [CHANGELOG.md](CHANGELOG.md) for release
 history.
 
 This package diagnoses, recompiles, and refreshes RFPro parameters created with
-`EM > Component > Parameters...`. Both production Python scripts include the
+`EM > Component > Parameters...`. Both ADS-side production scripts include the
 required Qt setup directly—no helper import and no user-level Qt environment
-changes are required.
+changes are required. The RFPro-side runtime helper reuses the application and
+event loop already owned by RFPro.
 
 An **AEL Macro PCell is expected** for this workflow. Do not convert it to a
 Python PCell or recreate its parameters in `File > Customize PCell`.
@@ -26,8 +27,13 @@ ads-rfpro-pcell-recovery/
 ├── README.md
 ├── VERSION
 ├── de_generated_scripts/
+│   ├── __init__.py
 │   ├── diagnose_pcell_parameters.py
+│   ├── refresh_rfpro_runtime.py
 │   └── refresh_rfpro_view.py
+├── rfpro_pcell_recovery/
+│   ├── __init__.py
+│   └── runtime.py
 └── scripts/
     ├── check_release_version.py
     ├── diagnose_qt.py
@@ -60,6 +66,14 @@ Production scripts:
 
 - [`diagnose_pcell_parameters.py`](de_generated_scripts/diagnose_pcell_parameters.py)
 - [`refresh_rfpro_view.py`](de_generated_scripts/refresh_rfpro_view.py)
+
+Importable RFPro-side runtime helper:
+
+- [`rfpro_pcell_recovery/runtime.py`](rfpro_pcell_recovery/runtime.py)
+
+Compatibility/direct-execution entry point:
+
+- [`refresh_rfpro_runtime.py`](de_generated_scripts/refresh_rfpro_runtime.py)
 
 Support scripts:
 
@@ -350,6 +364,37 @@ Changing a parameter to a value that has never been cached may display the new
 artwork and can confirm this diagnosis, but it is not a cache purge. Do not use
 that as the basis for a sweep because previously cached values may still use
 the old geometry.
+
+After the ADS-side update has completed, open only the affected RFPro view. To
+refresh its active in-memory layout without clearing or replacing the project,
+run this from the **RFPro/EMPro Python Console**:
+
+```python
+import sys
+
+sys.path.insert(
+    0,
+    r"C:\absolute\path\to\ads-rfpro-pcell-recovery",
+)
+
+from rfpro_pcell_recovery import refresh_active_rfpro_layout
+
+parameters = refresh_active_rfpro_layout(timeout_seconds=5.0)
+print(parameters)
+```
+
+On Linux, use the corresponding absolute repository path. The importable
+helper calls the active layout wrapper's `refresh()`, pumps RFPro's GUI event
+loop, and waits for its design-parameter collection to become non-empty. This
+is necessary because `refresh()` can temporarily clear that collection and
+return before RFPro has processed the queued reload. It affects the active
+RFPro layout only; it does not reset `.adsPcells` or replace the project.
+
+The helper confirms only that RFPro reloaded the parameter metadata. If the
+parameter names return but changing their values still moves the vertices or
+elements according to the **old** `EM > Component > Parameters...` mapping,
+RFPro is still evaluating cached PCell artwork. Do not treat the successful
+runtime refresh as proof that the new geometry generator is active.
 
 Do not pass `--workspace` for this operation because it requires the live ADS
 application. If the persisted source schema is correct but RFPro still shows a

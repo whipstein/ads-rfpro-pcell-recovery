@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## 1.22.1 - 2026-08-16
+
+- Move the importable RFPro helper behind the unique
+  `rfpro_pcell_recovery` package name so ADS-generated or previously cached
+  `de_generated_scripts` namespace packages cannot shadow it and produce an
+  `ImportError` from an unknown location.
+- Retain `de_generated_scripts/refresh_rfpro_runtime.py` as a direct-execution
+  and compatibility entry point while documenting the collision-safe import.
+
+## 1.22.0 - 2026-08-16
+
+- Add the importable RFPro-side `refresh_rfpro_runtime.py` helper for refreshing
+  only the active layout, pumping the RFPro GUI event loop, and waiting for the
+  in-memory design-parameter table to be repopulated.
+- Keep the RFPro runtime operation separate from the ADS-side view-file writer
+  and explicitly report that restored parameter metadata does not prove that
+  same-value PCell artwork was regenerated or evicted from `.adsPcells`.
+- Validate the active RFPro project, layout wrapper, timeout, event processor,
+  and parameter result without opening, replacing, or clearing another view.
+
 ## 1.21.0 - 2026-08-16
 
 - Integrate ADS' documented

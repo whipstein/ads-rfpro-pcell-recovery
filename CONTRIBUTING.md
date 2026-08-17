@@ -64,6 +64,24 @@ The cache inspector must remain read-only. Validate exact/component matching,
 large-file skip reporting, and the changed-during-scan warning with disposable
 fixtures; never validate deletion against a working ADS cache.
 
+With the affected view active, validate the importable runtime helper from the
+RFPro/EMPro Python Console:
+
+```python
+import sys
+
+sys.path.insert(0, r"C:\path\to\ads-rfpro-pcell-recovery")
+from rfpro_pcell_recovery import refresh_active_rfpro_layout
+
+print(refresh_active_rfpro_layout())
+```
+
+Confirm that it returns after RFPro repopulates the active layout's parameter
+collection. Also confirm that an unavailable project, unavailable layout, or
+empty result at timeout raises a descriptive exception. This is not a geometry
+cache-eviction test: restored parameter names and old artwork behavior are
+distinct outcomes.
+
 If an in-place source synchronization does not populate the existing RFPro
 view, validate the backed-up RFPro recreation fallback from the live ADS Python
 Console with the owning workspace open:

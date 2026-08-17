@@ -22,8 +22,12 @@ jobs:
       - name: Compile Python sources
         run: |
           python -m py_compile \
+            de_generated_scripts/__init__.py \
             de_generated_scripts/diagnose_pcell_parameters.py \
+            de_generated_scripts/refresh_rfpro_runtime.py \
             de_generated_scripts/refresh_rfpro_view.py \
+            rfpro_pcell_recovery/__init__.py \
+            rfpro_pcell_recovery/runtime.py \
             scripts/check_release_version.py \
             scripts/inspect_adspcells_cache.py \
             scripts/diagnose_qt.py \
